@@ -31,6 +31,7 @@ class ClpPackageS3AuthProvider : public ClpS3AuthProviderBase {
       : ClpS3AuthProviderBase(config) {}
 
   static constexpr const char* kAccessKeyId = "clp.s3-access-key-id";
+  static constexpr const char* kBucket = "clp.s3-bucket";
   static constexpr const char* kEndPoint = "clp.s3-end-point";
   static constexpr const char* kSecretAccessKey = "clp.s3-secret-access-key";
   static constexpr const char* kSessionToken = "clp.s3-session-token";
@@ -44,6 +45,7 @@ class ClpPackageS3AuthProvider : public ClpS3AuthProviderBase {
   bool exportAuthEnvironmentVariables() override;
 
  private:
+  std::string bucket_;
   std::string endPoint_;
 };
 
