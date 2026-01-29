@@ -17,6 +17,7 @@
 #pragma once
 
 #include <simdjson.h>
+#include <cstdint>
 
 #include "clp_s/ColumnReader.hpp"
 #include "clp_s/SchemaTree.hpp"
@@ -58,6 +59,8 @@ class ClpArchiveVectorLoader : public VectorLoader {
 
   template <typename T, typename VectorPtr>
   void populateData(RowSet rows, VectorPtr vector);
+
+  void populateTimestampDataAsInteger(RowSet rows, FlatVector<int64_t>* vector);
 
   template <clp_s::NodeType Type>
   void populateTimestampData(

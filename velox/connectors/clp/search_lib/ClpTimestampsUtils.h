@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "clp_s/Defs.hpp"
 #include "velox/type/Timestamp.h"
 
 namespace facebook::velox::connector::clp::search_lib {
@@ -114,6 +115,20 @@ inline auto convertToVeloxTimestamp(int64_t timestamp) -> Timestamp {
   int64_t nanoseconds{
       (timestamp % precisionDifference) *
       (Timestamp::kNanosInSecond / precisionDifference)};
+  if (nanoseconds < 0) {
+    seconds -= 1;
+    nanoseconds += Timestamp::kNanosInSecond;
+  }
+  return Timestamp(seconds, static_cast<uint64_t>(nanoseconds));
+}
+
+/// Converts a nanosecond precision epochtime_t into a Velox timestamp.
+///
+/// @param timestamp the input timestamp as an integer
+/// @return the corresponding Velox timestamp
+inline auto convertNanosecondEpochToVeloxTimestamp(clp_s::epochtime_t timestamp) -> Timestamp {
+  int64_t seconds{timestamp / Timestamp::kNanosInSecond};
+  int64_t nanoseconds{timestamp % Timestamp::kNanosInSecond};
   if (nanoseconds < 0) {
     seconds -= 1;
     nanoseconds += Timestamp::kNanosInSecond;

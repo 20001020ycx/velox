@@ -17,9 +17,12 @@
 #include <glog/logging.h>
 
 #include "clp_s/ArchiveReader.hpp"
+#include "clp_s/SingleFileArchiveDefs.hpp"
 #include "clp_s/search/EvaluateTimestampIndex.hpp"
 #include "clp_s/search/ast/EmptyExpr.hpp"
 #include "clp_s/search/ast/SearchUtils.hpp"
+#include "clp_s/search/ast/SetTimestampLiteralPrecision.hpp"
+#include "clp_s/search/ast/TimestampLiteral.hpp"
 #include "velox/connectors/clp/ClpColumnHandle.h"
 #include "velox/connectors/clp/search_lib/archive/ClpArchiveCursor.h"
 #include "velox/connectors/clp/search_lib/archive/ClpArchiveJsonStringVectorLoader.h"
@@ -135,6 +138,14 @@ ErrorCode ClpArchiveCursor::loadSplit() {
   auto timestampDict = archiveReader_->get_timestamp_dictionary();
   auto schemaTree = archiveReader_->get_schema_tree();
   auto schemaMap = archiveReader_->get_schema_map();
+
+  auto const defaultTimestampPrecision{
+      archiveReader_->get_header().version < clp_s::cNewTimestampFormatVersion
+          ? TimestampLiteral::Precision::Milliseconds
+          : TimestampLiteral::Precision::Nanoseconds};
+  SetTimestampLiteralPrecision timestampPrecisionPass{
+      defaultTimestampPrecision};
+  expr_ = timestampPrecisionPass.run(expr_);
 
   EvaluateTimestampIndex timestampIndex(timestampDict);
   if (clp_s::EvaluatedValue::False == timestampIndex.run(expr_)) {
