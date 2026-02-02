@@ -62,17 +62,40 @@ void ClpArchiveVectorLoader::populateData(RowSet rows, VectorPtr vector) {
   }
 }
 
+void ClpArchiveVectorLoader::populateTimestampDataAsInteger(
+    RowSet rows,
+    FlatVector<int64_t>* vector) {
+  auto timestampReader =
+      dynamic_cast<clp_s::TimestampColumnReader*>(columnReader_);
+  if (timestampReader == nullptr) {
+    for (int vectorIndex : rows) {
+      vector->setNull(vectorIndex, true);
+    }
+    return;
+  }
+
+  for (int vectorIndex : rows) {
+    auto messageIndex = filteredRowIndices_->at(vectorIndex);
+    vector->set(
+        vectorIndex,
+        timestampReader->get_encoded_time(messageIndex) /
+            Timestamp::kNanosecondsInMillisecond);
+    vector->setNull(vectorIndex, false);
+  }
+}
+
 template <clp_s::NodeType Type>
 void ClpArchiveVectorLoader::populateTimestampData(
     RowSet rows,
     FlatVector<facebook::velox::Timestamp>* vector) {
   bool supportedNodeType{false};
   switch (Type) {
+    case clp_s::NodeType::Timestamp:
     case clp_s::NodeType::Float:
     case clp_s::NodeType::FormattedFloat:
     case clp_s::NodeType::DictionaryFloat:
     case clp_s::NodeType::Integer:
-    case clp_s::NodeType::DateString:
+    case clp_s::NodeType::DeprecatedDateString:
       supportedNodeType = true;
       break;
     default:
@@ -88,7 +111,13 @@ void ClpArchiveVectorLoader::populateTimestampData(
   for (int vectorIndex : rows) {
     auto messageIndex = filteredRowIndices_->at(vectorIndex);
 
-    if (clp_s::NodeType::Float == Type) {
+    if (clp_s::NodeType::Timestamp == Type) {
+      auto reader = static_cast<clp_s::TimestampColumnReader*>(columnReader_);
+      vector->set(
+          vectorIndex,
+          convertNanosecondEpochToVeloxTimestamp(
+              reader->get_encoded_time(messageIndex)));
+    } else if (clp_s::NodeType::Float == Type) {
       auto reader = static_cast<clp_s::FloatColumnReader*>(columnReader_);
       vector->set(
           vectorIndex,
@@ -115,7 +144,7 @@ void ClpArchiveVectorLoader::populateTimestampData(
           convertToVeloxTimestamp(
               std::get<int64_t>(reader->extract_value(messageIndex))));
     } else {
-      auto reader = static_cast<clp_s::DateStringColumnReader*>(columnReader_);
+      auto reader = static_cast<clp_s::DeprecatedDateStringColumnReader*>(columnReader_);
       vector->set(
           vectorIndex,
           convertToVeloxTimestamp(reader->get_encoded_time(messageIndex)));
@@ -134,7 +163,12 @@ void ClpArchiveVectorLoader::loadInternal(
   switch (nodeType_) {
     case ColumnType::Integer: {
       auto intVector = vector->asFlatVector<int64_t>();
-      populateData<int64_t>(rows, intVector);
+      if (nullptr !=
+          dynamic_cast<clp_s::TimestampColumnReader*>(columnReader_)) {
+        populateTimestampDataAsInteger(rows, intVector);
+      } else {
+        populateData<int64_t>(rows, intVector);
+      }
       break;
     }
     case ColumnType::Float: {
@@ -210,12 +244,17 @@ void ClpArchiveVectorLoader::loadInternal(
     }
     case ColumnType::Timestamp: {
       auto timestampVector = vector->asFlatVector<Timestamp>();
-      if (nullptr != dynamic_cast<clp_s::Int64ColumnReader*>(columnReader_)) {
+      if (nullptr !=
+          dynamic_cast<clp_s::TimestampColumnReader*>(columnReader_)) {
+        populateTimestampData<clp_s::NodeType::Timestamp>(
+            rows, timestampVector);
+      } else if (
+          nullptr != dynamic_cast<clp_s::Int64ColumnReader*>(columnReader_)) {
         populateTimestampData<clp_s::NodeType::Integer>(rows, timestampVector);
       } else if (
           nullptr !=
-          dynamic_cast<clp_s::DateStringColumnReader*>(columnReader_)) {
-        populateTimestampData<clp_s::NodeType::DateString>(
+          dynamic_cast<clp_s::DeprecatedDateStringColumnReader*>(columnReader_)) {
+        populateTimestampData<clp_s::NodeType::DeprecatedDateString>(
             rows, timestampVector);
       } else if (
           nullptr != dynamic_cast<clp_s::FloatColumnReader*>(columnReader_)) {
@@ -254,6 +293,10 @@ template void ClpArchiveVectorLoader::populateData<std::string>(
     RowSet rows,
     FlatVector<StringView>* vector);
 template void
+ClpArchiveVectorLoader::populateTimestampData<clp_s::NodeType::Timestamp>(
+    RowSet rows,
+    FlatVector<facebook::velox::Timestamp>* vector);
+template void
 ClpArchiveVectorLoader::populateTimestampData<clp_s::NodeType::Float>(
     RowSet rows,
     FlatVector<facebook::velox::Timestamp>* vector);
@@ -261,12 +304,20 @@ template void
 ClpArchiveVectorLoader::populateTimestampData<clp_s::NodeType::Integer>(
     RowSet rows,
     FlatVector<facebook::velox::Timestamp>* vector);
-template void
-ClpArchiveVectorLoader::populateTimestampData<clp_s::NodeType::DateString>(
+template void ClpArchiveVectorLoader::populateTimestampData<
+    clp_s::NodeType::DeprecatedDateString>(
     RowSet rows,
     FlatVector<facebook::velox::Timestamp>* vector);
 template void
 ClpArchiveVectorLoader::populateTimestampData<clp_s::NodeType::Unknown>(
+    RowSet rows,
+    FlatVector<facebook::velox::Timestamp>* vector);
+template void
+ClpArchiveVectorLoader::populateTimestampData<clp_s::NodeType::FormattedFloat>(
+    RowSet rows,
+    FlatVector<facebook::velox::Timestamp>* vector);
+template void
+ClpArchiveVectorLoader::populateTimestampData<clp_s::NodeType::DictionaryFloat>(
     RowSet rows,
     FlatVector<facebook::velox::Timestamp>* vector);
 

@@ -16,6 +16,8 @@
 
 #include "clp_s/ColumnReader.hpp"
 #include "clp_s/InputConfig.hpp"
+#include "clp_s/search/ast/SetTimestampLiteralPrecision.hpp"
+#include "clp_s/search/ast/TimestampLiteral.hpp"
 
 #include "ffi/ir_stream/search/QueryHandler.hpp"
 #include "velox/connectors/clp/ClpColumnHandle.h"
@@ -73,6 +75,10 @@ ErrorCode ClpIrCursor::loadSplit() {
   auto networkAuthOption = inputSource_ == InputSource::Filesystem
       ? NetworkAuthOption{.method = AuthMethod::None}
       : NetworkAuthOption{.method = AuthMethod::S3PresignedUrlV4};
+
+  search::ast::SetTimestampLiteralPrecision timestampPrecisionPass{
+      search::ast::TimestampLiteral::Precision::Milliseconds};
+  expr_ = timestampPrecisionPass.run(expr_);
 
   auto projections = splitFieldsToNamesAndTypes();
   auto queryHandlerResult{QueryHandlerType::create(
