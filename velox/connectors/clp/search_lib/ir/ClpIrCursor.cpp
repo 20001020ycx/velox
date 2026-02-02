@@ -77,7 +77,7 @@ ErrorCode ClpIrCursor::loadSplit() {
       : NetworkAuthOption{.method = AuthMethod::S3PresignedUrlV4};
 
   search::ast::SetTimestampLiteralPrecision timestampPrecisionPass{
-      ast::TimestampLiteral::Precision::Milliseconds};
+      search::ast::TimestampLiteral::Precision::Milliseconds};
   expr_ = timestampPrecisionPass.run(expr_);
 
   auto projections = splitFieldsToNamesAndTypes();
