@@ -39,8 +39,30 @@ class ClpDataSource : public DataSource {
       velox::memory::MemoryPool* pool,
       std::shared_ptr<const ClpConfig>& clpConfig);
 
+  /**
+   * Initializes the cursor for processing a new split. The split must be fully
+   * consumed by `next` before another split can be added. This method creates
+   * the per-split cursor for reading the split and executes the split's
+   * pushdown query.
+   * @param split The connector split to process. Must be a `ClpConnectorSplit`.
+   */
   void addSplit(std::shared_ptr<ConnectorSplit> split) override;
 
+  /**
+   * Fetches the next batch of filtered rows from the current split. Internally
+   * loops over the cursor, skipping batches where no rows match the query
+   * filter, until either matching rows are found or the split is exhausted.
+   * This method only returns matching rows for a single batch; it is up to
+   * Velox's TableScan to invoke this method repeatedly to collect all matching
+   * rows for a given query plan. A `nullptr` return signals
+   * that the split is fully consumed and a new split may be added via
+   * `addSplit`.
+   * @param size The maximum number of rows to scan per cursor fetch.
+   * @param future Unused. CLP data sources perform synchronous I/O and never
+   * return `std::nullopt`.
+   * @return A `RowVector` containing the filtered rows for the current batch.
+   * @return `nullptr` if the split has been fully consumed.
+   */
   std::optional<RowVectorPtr> next(uint64_t size, velox::ContinueFuture& future)
       override;
 

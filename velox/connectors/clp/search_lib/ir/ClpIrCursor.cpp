@@ -51,7 +51,7 @@ uint64_t ClpIrCursor::fetchNext(uint64_t numRows) {
         error.category().name(),
         error.message());
   }
-  return irDeserializer_->get_num_log_events_deserialized();
+  return deserializeResult.value();
 }
 
 size_t ClpIrCursor::getNumFilteredRows() const {
@@ -168,7 +168,7 @@ ClpIrCursor::splitFieldsToNamesAndTypes() {
   return result;
 }
 
-ystdlib::error_handling::Result<void> ClpIrCursor::deserialize(
+ystdlib::error_handling::Result<uint64_t> ClpIrCursor::deserialize(
     uint64_t numRows) {
   filteredLogEvents_->clear();
   uint64_t cnt{0};
@@ -188,7 +188,7 @@ ystdlib::error_handling::Result<void> ClpIrCursor::deserialize(
       ++cnt;
     }
   }
-  return ystdlib::error_handling::success();
+  return cnt;
 }
 
 VectorPtr ClpIrCursor::createMetadataProjectionVector(

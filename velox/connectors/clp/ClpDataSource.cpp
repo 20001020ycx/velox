@@ -142,12 +142,16 @@ void ClpDataSource::addSplit(std::shared_ptr<ConnectorSplit> split) {
 std::optional<RowVectorPtr> ClpDataSource::next(
     uint64_t size,
     ContinueFuture& future) {
-  auto rowsScanned = cursor_->fetchNext(size);
-  auto rowsFiltered = cursor_->getNumFilteredRows();
-  if (rowsFiltered == 0) {
-    return nullptr;
-  }
-  completedRows_ += rowsScanned;
+  uint64_t rowsScanned;
+  uint64_t rowsFiltered;
+  do {
+    rowsScanned = cursor_->fetchNext(size);
+    rowsFiltered = cursor_->getNumFilteredRows();
+    completedRows_ += rowsScanned;
+    if (rowsScanned == 0) {
+      return nullptr;
+    }
+  } while (rowsFiltered == 0);
   return std::dynamic_pointer_cast<RowVector>(
       cursor_->createVector(pool_, outputType_, rowsFiltered));
 }

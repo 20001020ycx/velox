@@ -38,6 +38,14 @@ class ClpIrCursor final : public BaseClpCursor {
   ClpIrCursor(ClpIrCursor&&) = delete;
   ClpIrCursor& operator=(ClpIrCursor&&) = delete;
 
+  /**
+   * Processes a single batch of up to `numRows` log events from the current IR
+   * split. Loads the split on the first invocation.
+   * @param numRows The maximum number of log events to deserialize.
+   * @return The number of log events deserialized in this invocation.
+   * @return 0 if the IR stream has been fully consumed or an error occurred
+   * during split loading.
+   */
   uint64_t fetchNext(uint64_t numRows) override;
 
   size_t getNumFilteredRows() const override;
@@ -95,7 +103,15 @@ class ClpIrCursor final : public BaseClpCursor {
       std::pair<std::string, clp_s::search::ast::literal_type_bitmask_t>>
   splitFieldsToNamesAndTypes();
 
-  ystdlib::error_handling::Result<void> deserialize(uint64_t numRows);
+  /**
+   * Deserializes up to `numRows` log events from an IR split through the IR
+   * FFI deserializer, with the query filter to each deserialized log event.
+   * @param numRows The maximum number of log events to deserialize.
+   * @return The number of log events deserialized in this invocation on
+   * success.
+   * @return An error code if an unrecoverable deserialization error occurred.
+   */
+  ystdlib::error_handling::Result<uint64_t> deserialize(uint64_t numRows);
 
   VectorPtr createVectorHelper(
       memory::MemoryPool* pool,

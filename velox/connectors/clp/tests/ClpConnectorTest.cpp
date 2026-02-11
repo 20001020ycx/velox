@@ -22,6 +22,7 @@
 #include "velox/connectors/clp/ClpConnector.h"
 #include "velox/connectors/clp/ClpConnectorSplit.h"
 #include "velox/connectors/clp/ClpTableHandle.h"
+#include "velox/core/QueryConfig.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/OperatorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
@@ -961,6 +962,47 @@ TEST_F(ClpConnectorTest, test5HybridPushdown) {
            Timestamp(1746003205, 0),
        }),
        makeFlatVector<double>({1, 1, 1, 1, 1, 1})});
+  test::assertEqualVectors(expected, output);
+}
+
+// Regression test: with a small batch size and a KQL pushdown that only
+// matches events in later batches, the data source must not prematurely signal
+// split exhaustion after the first empty batch.
+//
+// test_1_ir.clp.zst has 10 events in order. With batch size 3:
+//   Batch 1 (events 1-3): GET, POST, GET — no PATCH match
+//   Batch 2 (events 4-6): PUT, DELETE, GET — no PATCH match
+//   Batch 3 (events 7-9): POST, GET, PATCH — event 9 matches
+// The bug would return nullptr after Batch 1, dropping the PATCH event.
+TEST_F(ClpConnectorTest, irSmallBatchDoesNotDropRows) {
+  auto kqlQuery = std::make_shared<std::string>("method: \"PATCH\"");
+  auto plan =
+      PlanBuilder()
+          .startTableScan()
+          .outputType(ROW({"requestId", "method"}, {VARCHAR(), VARCHAR()}))
+          .tableHandle(
+              std::make_shared<ClpTableHandle>(kClpConnectorId, "test_1"))
+          .assignments(
+              {{"requestId",
+                std::make_shared<ClpColumnHandle>(
+                    "requestId", "requestId", VARCHAR())},
+               {"method",
+                std::make_shared<ClpColumnHandle>(
+                    "method", "method", VARCHAR())}})
+          .endTableScan()
+          .planNode();
+
+  auto output = exec::test::AssertQueryBuilder(plan)
+                    .splits({makeClpSplit(
+                        getExampleFilePath("test_1_ir.clp.zst"),
+                        ClpConnectorSplit::SplitType::kIr,
+                        kqlQuery)})
+                    .config(core::QueryConfig::kPreferredOutputBatchRows, "3")
+                    .copyResults(pool());
+
+  auto expected = makeRowVector(
+      {makeFlatVector<StringView>({"req-108"}),
+       makeFlatVector<StringView>({"PATCH"})});
   test::assertEqualVectors(expected, output);
 }
 
