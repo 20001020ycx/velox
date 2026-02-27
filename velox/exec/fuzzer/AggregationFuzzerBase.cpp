@@ -303,8 +303,9 @@ std::vector<RowVectorPtr> AggregationFuzzerBase::generateInputData(
       children.push_back(vectorFuzzer_.fuzz(inputType->childAt(j), size));
     }
 
-    input.push_back(std::make_shared<RowVector>(
-        pool_.get(), inputType, nullptr, size, std::move(children)));
+    input.push_back(
+        std::make_shared<RowVector>(
+            pool_.get(), inputType, nullptr, size, std::move(children)));
   }
 
   if (generator != nullptr) {
@@ -404,16 +405,18 @@ std::vector<RowVectorPtr> AggregationFuzzerBase::generateInputDataWithRowNumber(
         // values. This is done to introduce some repetition of key values for
         // windowing.
         auto baseVector = vectorFuzzer_.fuzz(types[i], numPartitions);
-        children.push_back(BaseVector::wrapInDictionary(
-            partitionNulls, partitionIndices, size, baseVector));
+        children.push_back(
+            BaseVector::wrapInDictionary(
+                partitionNulls, partitionIndices, size, baseVector));
       } else if (
           windowFrameBoundsSet.find(names[i]) != windowFrameBoundsSet.end()) {
         // Frame bound columns cannot have NULLs.
         children.push_back(vectorFuzzer_.fuzzNotNull(types[i], size));
       } else if (sortingKeySet.find(names[i]) != sortingKeySet.end()) {
         auto baseVector = vectorFuzzer_.fuzz(types[i], numPeerGroups);
-        children.push_back(BaseVector::wrapInDictionary(
-            sortingNulls, sortingIndices, size, baseVector));
+        children.push_back(
+            BaseVector::wrapInDictionary(
+                sortingNulls, sortingIndices, size, baseVector));
       } else {
         children.push_back(vectorFuzzer_.fuzz(types[i], size));
       }
@@ -553,13 +556,19 @@ void AggregationFuzzerBase::testPlan(
     const std::vector<std::shared_ptr<ResultVerifier>>& customVerifiers,
     const velox::fuzzer::ResultOrError& expected,
     int32_t maxDrivers) {
-  auto actual = execute(
-      planWithSplits.plan,
-      planWithSplits.splits,
-      injectSpill,
-      abandonPartial,
-      maxDrivers);
-  compare(actual, customVerification, customVerifiers, expected);
+  try {
+    auto actual = execute(
+        planWithSplits.plan,
+        planWithSplits.splits,
+        injectSpill,
+        abandonPartial,
+        maxDrivers);
+    compare(actual, customVerification, customVerifiers, expected);
+  } catch (...) {
+    LOG(ERROR) << "Failed while testing plan: "
+               << planWithSplits.plan->toString(true, true);
+    throw;
+  }
 }
 
 void AggregationFuzzerBase::compare(
@@ -606,10 +615,12 @@ void AggregationFuzzerBase::compare(
       VELOX_CHECK(
           verifier->compare(expected.result, actual.result),
           "Logically equivalent plans produced different results");
+      LOG(INFO) << "Verified through custom verifier.";
     } else if (verifier->supportsVerify()) {
       VELOX_CHECK(
           verifier->verify(actual.result),
           "Result of a logically equivalent plan failed custom verification");
+      LOG(INFO) << "Verified through custom verifier.";
     } else {
       VELOX_UNREACHABLE(
           "Custom verifier must support either 'compare' or 'verify' API.");

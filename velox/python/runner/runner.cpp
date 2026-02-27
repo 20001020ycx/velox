@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <folly/system/HardwareConcurrency.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include "velox/python/init/PyInit.h"
@@ -32,7 +33,7 @@ PYBIND11_MODULE(runner, m) {
   // is about to exit.
   static auto rootPool = velox::memory::memoryManager()->addRootPool();
   static auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(
-      std::thread::hardware_concurrency());
+      folly::hardware_concurrency());
 
   // execute() returns an iterator to Vectors.
   py::module::import("pyvelox.vector");
@@ -133,7 +134,7 @@ PYBIND11_MODULE(runner, m) {
 
   // When the module gets unloaded, first ensure all tasks created by this
   // module have finished, then unregister all connectors that have been
-  // registered by this module. We need to explicity unregister them to prevent
+  // registered by this module. We need to explicitly unregister them to prevent
   // the connectors and their nested structures from being destructed after
   // other global and static resources are destructed.
   m.add_object("_cleanup", py::capsule([]() {

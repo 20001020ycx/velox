@@ -18,6 +18,7 @@
 
 #include "velox/dwio/common/tests/utils/DataSetBuilder.h"
 #include "velox/expression/Expr.h"
+#include "velox/expression/ExprConstants.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 #include "velox/parse/Expressions.h"
@@ -167,7 +168,7 @@ void E2EFilterTestBase::readWithFilter(
   auto resultBatch = BaseVector::create(rowType_, 1, leafPool_.get());
   resetReadBatchSizes();
   int32_t clearCnt = 0;
-  auto deletedRowsIter = mutationSpec.deletedRows.begin();
+  auto deletedRowsIter = mutationSpec.deletedRows.cbegin();
   while (true) {
     {
       MicrosecondTimer timer(&time);
@@ -181,7 +182,7 @@ void E2EFilterTestBase::readWithFilter(
       auto readSize = rowReader->nextReadSize(nextReadBatchSize());
       std::vector<uint64_t> isDeleted(bits::nwords(readSize));
       bool haveDelete = false;
-      for (; deletedRowsIter != mutationSpec.deletedRows.end();
+      for (; deletedRowsIter != mutationSpec.deletedRows.cend();
            ++deletedRowsIter) {
         auto i = *deletedRowsIter;
         if (i < nextRowNumber) {
@@ -491,15 +492,31 @@ void E2EFilterTestBase::testMetadataFilterImpl(
     core::ExpressionEvaluator* evaluator,
     const std::string& remainingFilter,
     std::function<bool(int64_t, int64_t)> validationFilter) {
-  SCOPED_TRACE(fmt::format("remainingFilter={}", remainingFilter));
+  SCOPED_TRACE(fmt::format("remainingFilter='{}'", remainingFilter));
+  auto untypedExpr = parse::parseExpr(remainingFilter, {});
+  auto typedExpr = core::Expressions::inferTypes(
+      untypedExpr, batches[0]->type(), leafPool_.get());
+  testMetadataFilterImpl(
+      batches,
+      std::move(filterField),
+      std::move(filter),
+      evaluator,
+      std::move(typedExpr),
+      std::move(validationFilter));
+}
+
+void E2EFilterTestBase::testMetadataFilterImpl(
+    const std::vector<RowVectorPtr>& batches,
+    common::Subfield filterField,
+    std::unique_ptr<common::Filter> filter,
+    core::ExpressionEvaluator* evaluator,
+    core::TypedExprPtr typedExpr,
+    std::function<bool(int64_t, int64_t)> validationFilter) {
   auto spec = std::make_shared<common::ScanSpec>("<root>");
   if (filter) {
     spec->getOrCreateChild(std::move(filterField))
         ->setFilter(std::move(filter));
   }
-  auto untypedExpr = parse::parseExpr(remainingFilter, {});
-  auto typedExpr = core::Expressions::inferTypes(
-      untypedExpr, batches[0]->type(), leafPool_.get());
   auto metadataFilter =
       std::make_shared<MetadataFilter>(*spec, *typedExpr, evaluator);
   auto specA = spec->getOrCreateChild(common::Subfield("a"));
@@ -580,12 +597,13 @@ void E2EFilterTestBase::testMetadataFilter() {
         nullptr,
         c->size(),
         std::vector<VectorPtr>({c}));
-    batches.push_back(std::make_shared<RowVector>(
-        leafPool_.get(),
-        ROW({{"a", a->type()}, {"b", b->type()}}),
-        nullptr,
-        a->size(),
-        std::vector<VectorPtr>({a, b})));
+    batches.push_back(
+        std::make_shared<RowVector>(
+            leafPool_.get(),
+            ROW({{"a", a->type()}, {"b", b->type()}}),
+            nullptr,
+            a->size(),
+            std::vector<VectorPtr>({a, b})));
   }
   writeToMemory(batches[0]->type(), batches, false);
 
@@ -621,6 +639,56 @@ void E2EFilterTestBase::testMetadataFilter() {
       [](int64_t a, int64_t) {
         return !!(a == 2 || a == 3 || a == 5 || a == 7);
       });
+  {
+    SCOPED_TRACE("remainingFilter='a == 1 or a == 3 or a == 8'");
+    auto typedExpr1 = core::Expressions::inferTypes(
+        parse::parseExpr("a == 1", {}), batches[0]->type(), leafPool_.get());
+    auto typedExpr2 = core::Expressions::inferTypes(
+        parse::parseExpr("a == 3", {}), batches[0]->type(), leafPool_.get());
+    auto typedExpr3 = core::Expressions::inferTypes(
+        parse::parseExpr("a == 8", {}), batches[0]->type(), leafPool_.get());
+
+    auto typedExpr = std::make_shared<core::CallTypedExpr>(
+        velox::BOOLEAN(),
+        std::vector{
+            std::move(typedExpr1),
+            std::move(typedExpr2),
+            std::move(typedExpr3),
+        },
+        expression::kOr);
+    testMetadataFilterImpl(
+        batches,
+        common::Subfield("a"),
+        nullptr,
+        &evaluator,
+        std::move(typedExpr),
+        [](int64_t a, int64_t) { return a == 1 || a == 3 || a == 8; });
+  }
+  {
+    SCOPED_TRACE("remainingFilter='a >= 1 and a <= 100 and a == 8'");
+    auto typedExpr1 = core::Expressions::inferTypes(
+        parse::parseExpr("a >= 1", {}), batches[0]->type(), leafPool_.get());
+    auto typedExpr2 = core::Expressions::inferTypes(
+        parse::parseExpr("a <= 100", {}), batches[0]->type(), leafPool_.get());
+    auto typedExpr3 = core::Expressions::inferTypes(
+        parse::parseExpr("b.c != 8", {}), batches[0]->type(), leafPool_.get());
+
+    auto typedExpr = std::make_shared<core::CallTypedExpr>(
+        velox::BOOLEAN(),
+        std::vector{
+            std::move(typedExpr1),
+            std::move(typedExpr2),
+            std::move(typedExpr3),
+        },
+        expression::kAnd);
+    testMetadataFilterImpl(
+        batches,
+        common::Subfield("a"),
+        nullptr,
+        &evaluator,
+        std::move(typedExpr),
+        [](int64_t a, int64_t c) { return a >= 1 && a <= 100 && c != 8; });
+  }
 
   {
     SCOPED_TRACE("Values not unique in row group");
@@ -681,8 +749,18 @@ void E2EFilterTestBase::testSubfieldsPruning() {
         [](auto) { return 1; },
         [](auto) { return 0; },
         [](auto) { return "foofoofoofoofoo"_sv; });
-    batches.push_back(
-        vectorMaker.rowVector({"a", "b", "c", "d"}, {a, b, c, d}));
+    auto e = vectorMaker.mapVector<int64_t, int64_t>(
+        batchSize_,
+        [&](auto) { return kMapSize; },
+        [](auto j) { return j; },
+        [&](auto j) { return j % kMapSize; });
+    auto f = vectorMaker.arrayVector<int64_t>(
+        batchSize_,
+        [&](auto j) { return kMapSize; },
+        [&](auto j) { return j % kMapSize; },
+        [&](auto j) { return j >= i + 1 && j % 23 == (i + 1) % 23; });
+    batches.push_back(vectorMaker.rowVector(
+        {"a", "b", "c", "d", "e", "f"}, {a, b, c, d, e, f}));
   }
   writeToMemory(batches[0]->type(), batches, false);
   auto spec = std::make_shared<common::ScanSpec>("<root>");
@@ -707,6 +785,12 @@ void E2EFilterTestBase::testSubfieldsPruning() {
   auto specD = spec->addFieldRecursively("d", *MAP(BIGINT(), VARCHAR()), 3);
   specD->childByName(common::ScanSpec::kMapKeysFieldName)
       ->setFilter(common::createBigintValues({1}, false));
+  auto specE = spec->addFieldRecursively("e", *MAP(BIGINT(), BIGINT()), 4);
+  specE->childByName(common::ScanSpec::kMapValuesFieldName)
+      ->setFilter(common::createBigintValues({0, 2, 4}, false));
+  auto specF = spec->addFieldRecursively("f", *ARRAY(BIGINT()), 5);
+  specF->childByName(common::ScanSpec::kArrayElementsFieldName)
+      ->setFilter(common::createBigintValues({0, 2, 4}, false));
   ReaderOptions readerOpts{leafPool_.get()};
   RowReaderOptions rowReaderOpts;
   auto input = std::make_unique<BufferedInput>(
@@ -756,6 +840,31 @@ void E2EFilterTestBase::testSubfieldsPruning() {
       auto* dd = actual->childAt(3)->loadedVector()->asUnchecked<MapVector>();
       ASSERT_FALSE(dd->isNullAt(ii));
       ASSERT_EQ(dd->sizeAt(ii), 0);
+      auto* e = expected->childAt(4)->asUnchecked<MapVector>();
+      auto* ee = actual->childAt(4)->loadedVector()->asUnchecked<MapVector>();
+      ASSERT_FALSE(ee->isNullAt(ii));
+      ASSERT_EQ(ee->sizeAt(ii), (kMapSize + 1) / 2);
+      for (int k = 0; k < kMapSize; k += 2) {
+        int k1 = ee->offsetAt(ii) + k / 2;
+        int k2 = e->offsetAt(j) + k;
+        ASSERT_TRUE(ee->mapKeys()->equalValueAt(e->mapKeys().get(), k1, k2));
+        ASSERT_TRUE(
+            ee->mapValues()->equalValueAt(e->mapValues().get(), k1, k2));
+      }
+      auto* f = expected->childAt(5)->asUnchecked<ArrayVector>();
+      auto* ff = actual->childAt(5)->loadedVector()->asUnchecked<ArrayVector>();
+      if (f->isNullAt(j)) {
+        ASSERT_TRUE(ff->isNullAt(ii));
+      } else {
+        ASSERT_FALSE(ff->isNullAt(ii));
+        for (int k = 0; k < kMapSize; k += 2) {
+          int k1 = ff->offsetAt(ii) + k / 2;
+          int k2 = f->offsetAt(j) + k;
+
+          ASSERT_TRUE(
+              ff->elements()->equalValueAt(f->elements().get(), k1, k2));
+        }
+      }
       ++ii;
     }
   }

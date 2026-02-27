@@ -22,14 +22,7 @@
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/connectors/tpch/TpchConnectorSplit.h"
 #include "velox/core/PlanNode.h"
-#include "velox/dwio/dwrf/RegisterDwrfReader.h"
-#include "velox/dwio/dwrf/RegisterDwrfWriter.h"
-#include "velox/dwio/dwrf/writer/Writer.h"
-#include "velox/exec/Cursor.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
-#include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
-#include "velox/functions/prestosql/registration/RegistrationFunctions.h"
-#include "velox/parse/TypeResolver.h"
 #include "velox/python/vector/PyVector.h"
 #include "velox/tpch/gen/TpchGen.h"
 
@@ -46,14 +39,13 @@ PyPlanNode::PyPlanNode(
   }
 }
 
-PyPlanBuilder::PyPlanBuilder(const std::shared_ptr<PyPlanContext>& planContext)
-    : planContext_(
-          planContext ? planContext : std::make_shared<PyPlanContext>()) {
-  rootPool_ = memory::memoryManager()->addRootPool();
-  leafPool_ = rootPool_->addLeafChild("py_plan_builder_pool");
-  planBuilder_ = exec::test::PlanBuilder(
-      planContext_->planNodeIdGenerator, leafPool_.get());
-}
+PyPlanBuilder::PyPlanBuilder(
+    const std::shared_ptr<memory::MemoryPool>& pool,
+    const std::shared_ptr<PyPlanContext>& planContext)
+    : pool_(pool),
+      planContext_(
+          planContext ? planContext : std::make_shared<PyPlanContext>()),
+      planBuilder_{planContext_->planNodeIdGenerator, pool_.get()} {}
 
 std::optional<PyPlanNode> PyPlanBuilder::planNode() const {
   if (planBuilder_.planNode() != nullptr) {
@@ -138,8 +130,7 @@ PyPlanBuilder& PyPlanBuilder::tableScan(
   // If there are subfields, create the appropriate structures and add to the
   // scan.
   if (!subfields.empty() || !rowIndexColumnName.empty()) {
-    std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>
-        assignments;
+    connector::ColumnHandleMap assignments;
 
     for (size_t i = 0; i < outputRowSchema->size(); ++i) {
       auto name = outputRowSchema->nameOf(i);
@@ -198,8 +189,9 @@ PyPlanBuilder& PyPlanBuilder::tableScan(
   std::vector<std::shared_ptr<connector::ConnectorSplit>> splits;
   if (inputFiles.has_value()) {
     for (const auto& inputFile : *inputFiles) {
-      splits.push_back(std::make_shared<connector::hive::HiveConnectorSplit>(
-          connectorId, inputFile.filePath(), inputFile.fileFormat()));
+      splits.push_back(
+          std::make_shared<connector::hive::HiveConnectorSplit>(
+              connectorId, inputFile.filePath(), inputFile.fileFormat()));
     }
   }
 
@@ -239,6 +231,18 @@ PyPlanBuilder& PyPlanBuilder::aggregate(
     const std::vector<std::string>& groupingKeys,
     const std::vector<std::string>& aggregations) {
   planBuilder_.singleAggregation(groupingKeys, aggregations);
+  return *this;
+}
+
+PyPlanBuilder& PyPlanBuilder::streamingAggregate(
+    const std::vector<std::string>& groupingKeys,
+    const std::vector<std::string>& aggregations) {
+  planBuilder_.streamingAggregation(
+      groupingKeys,
+      aggregations,
+      {},
+      core::AggregationNode::Step::kSingle,
+      false);
   return *this;
 }
 
@@ -299,11 +303,28 @@ PyPlanBuilder& PyPlanBuilder::indexLookupJoin(
           std::dynamic_pointer_cast<const core::TableScanNode>(
               indexPlanSubtree.planNode())) {
     planBuilder_.indexLookupJoin(
-        leftKeys, rightKeys, tableScanNode, {}, output, joinType);
+        leftKeys,
+        rightKeys,
+        tableScanNode,
+        {},
+        /*filter=*/"",
+        /*hasMarker=*/false,
+        output,
+        joinType);
   } else {
     throw std::runtime_error(
         "Index Loop Join subtree must be a single TableScanNode.");
   }
+  return *this;
+}
+
+PyPlanBuilder& PyPlanBuilder::unnest(
+    const std::vector<std::string>& unnestColumns,
+    const std::vector<std::string>& replicateColumns,
+    const std::optional<std::string>& ordinalColumn,
+    const std::optional<std::string>& emptyUnnestValueName) {
+  planBuilder_.unnest(
+      replicateColumns, unnestColumns, ordinalColumn, emptyUnnestValueName);
   return *this;
 }
 
@@ -340,8 +361,9 @@ PyPlanBuilder& PyPlanBuilder::tpchGen(
   // Generate one split per part.
   std::vector<std::shared_ptr<connector::ConnectorSplit>> splits;
   for (size_t i = 0; i < numParts; ++i) {
-    splits.push_back(std::make_shared<connector::tpch::TpchConnectorSplit>(
-        connectorId, numParts, i));
+    splits.push_back(
+        std::make_shared<connector::tpch::TpchConnectorSplit>(
+            connectorId, numParts, i));
   }
 
   planContext_->scanFiles[planBuilder_.planNode()->id()] = std::move(splits);

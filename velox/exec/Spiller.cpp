@@ -101,8 +101,9 @@ bool SpillerBase::fillSpillRuns(RowContainerIterator* iterator) {
 
     uint64_t totalRows{0};
     for (;;) {
-      const auto numRows = container_->listRows(
-          iterator, rows.size(), RowContainer::kUnlimited, rows.data());
+      // TODO: Reuse 'RowContainer::rowPointers_'.
+      const auto numRows =
+          container_->listRows(iterator, rows.size(), rows.data());
       if (numRows == 0) {
         lastRun = true;
         break;
@@ -154,8 +155,9 @@ void SpillerBase::runSpill(bool lastRun) {
     if (spillRun.rows.empty()) {
       continue;
     }
-    writes.push_back(memory::createAsyncMemoryReclaimTask<SpillStatus>(
-        [partitionId = id, this]() { return writeSpill(partitionId); }));
+    writes.push_back(
+        memory::createAsyncMemoryReclaimTask<SpillStatus>(
+            [partitionId = id, this]() { return writeSpill(partitionId); }));
     if ((writes.size() > 1) && executor_ != nullptr) {
       executor_->add([source = writes.back()]() { source->prepare(); });
     }
@@ -386,6 +388,20 @@ NoRowContainerSpiller::NoRowContainerSpiller(
     RowTypePtr rowType,
     std::optional<SpillPartitionId> parentId,
     HashBitRange bits,
+    const common::SpillConfig* spillConfig,
+    folly::Synchronized<common::SpillStats>* spillStats)
+    : NoRowContainerSpiller(
+          std::move(rowType),
+          parentId,
+          bits,
+          {},
+          spillConfig,
+          spillStats) {}
+
+NoRowContainerSpiller::NoRowContainerSpiller(
+    RowTypePtr rowType,
+    std::optional<SpillPartitionId> parentId,
+    HashBitRange bits,
     const std::vector<SpillSortKey>& sortingKeys,
     const common::SpillConfig* spillConfig,
     folly::Synchronized<common::SpillStats>* spillStats)
@@ -397,20 +413,6 @@ NoRowContainerSpiller::NoRowContainerSpiller(
           spillConfig->maxFileSize,
           0,
           parentId,
-          spillConfig,
-          spillStats) {}
-
-NoRowContainerSpiller::NoRowContainerSpiller(
-    RowTypePtr rowType,
-    std::optional<SpillPartitionId> parentId,
-    HashBitRange bits,
-    const common::SpillConfig* spillConfig,
-    folly::Synchronized<common::SpillStats>* spillStats)
-    : NoRowContainerSpiller(
-          std::move(rowType),
-          parentId,
-          bits,
-          {},
           spillConfig,
           spillStats) {}
 

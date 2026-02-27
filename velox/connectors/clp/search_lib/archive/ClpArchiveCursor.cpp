@@ -140,7 +140,7 @@ ErrorCode ClpArchiveCursor::loadSplit() {
   auto schemaMap = archiveReader_->get_schema_map();
 
   auto const defaultTimestampPrecision{
-      archiveReader_->get_header().version < clp_s::cNewTimestampFormatVersion
+      archiveReader_->has_deprecated_timestamp_format()
           ? TimestampLiteral::Precision::Milliseconds
           : TimestampLiteral::Precision::Nanoseconds};
   SetTimestampLiteralPrecision timestampPrecisionPass{

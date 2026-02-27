@@ -447,7 +447,9 @@ void FilterGenerator::addToScanSpec(
     const SubfieldFilters& filters,
     ScanSpec& spec) {
   for (auto& pair : filters) {
-    spec.getOrCreateChild(pair.first)->addFilter(*pair.second);
+    auto* child = spec.getOrCreateChild(pair.first);
+    VELOX_CHECK_NULL(child->filter());
+    child->setFilter(pair.second);
   }
 }
 
@@ -661,7 +663,7 @@ void pruneRandomSubfield(
                 break;
               case TypeKind::VARCHAR:
               case TypeKind::VARBINARY:
-                stringKeys.push_back(
+                stringKeys.emplace_back(
                     keys->asUnchecked<SimpleVector<StringView>>()->valueAt(jj));
                 break;
               default:

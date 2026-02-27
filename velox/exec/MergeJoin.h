@@ -235,6 +235,12 @@ class MergeJoin : public Operator {
   // right.
   bool addToOutputForRightJoin();
 
+ private:
+  // Template function to consolidate addToOutputForLeftJoin and
+  // addToOutputForRightJoin
+  template <bool IsLeftJoin>
+  bool addToOutputImpl();
+
   // Tries to add one row of output by writing to the indices of the output
   // dictionaries. By default, this operator returns dictionaries wrapped around
   // the input columns from the left and right. If `isRightFlattened_`, the
@@ -274,15 +280,61 @@ class MergeJoin : public Operator {
   // rightRowIndex_ are unchanged.
   bool tryAddOutputRowForRightJoin();
 
+  // Checks if we need to fetch more input from the right side of the join.
+  // Returns true if the right side has not been exhausted and we don't have
+  // a pending future for right side input and there's no current right input
+  // batch available for processing.
+  bool needsInputFromRightSide() const;
+
+  // Attempts to get the next batch of input from the right side. This method
+  // will keep trying to get input until either:
+  // 1. A right input batch is received
+  // 2. The right side is exhausted
+  // 3. A blocking operation is encountered
+  // Returns true if successful (got input or exhausted), false if blocked.
+  bool getNextFromRightSide();
+
+  // Processes the draining state when one or both sides of the join have been
+  // exhausted. Handles cleanup operations like dropping input sources for
+  // different join types (inner, left, right, anti) when appropriate.
+  // Returns true if draining is complete and the operator should return
+  // nullptr, false if draining is still in progress or there is no draining.
+  bool processDrain();
+
   // If all rows from the current left batch have been processed.
-  bool finishedLeftBatch() const {
+  bool leftBatchFinished() const {
     return leftRowIndex_ == input_->size();
   }
 
   // If all rows from the current right batch have been processed.
-  bool finishedRightBatch() const {
+  bool rightBatchFinished() const {
     return rightRowIndex_ == rightInput_->size();
   }
+
+  // Tries to complete incomplete matches on both left and right sides.
+  // Returns true if both matches are complete, false if more input is needed.
+  bool advanceMatch();
+
+  // Tries to complete an incomplete match on the left side by finding the end
+  // of matching key sequence. Returns true if complete, false if more input
+  // needed.
+  bool advanceLeftMatch();
+
+  // Tries to complete an incomplete match on the right side by finding the end
+  // of matching key sequence. Returns true if complete, false if more input
+  // needed.
+  bool advanceRightMatch();
+
+  // Template function to consolidate advanceLeftMatch and advanceRightMatch
+  // logic. Uses compile-time template parameter to handle left vs right
+  // differences.
+  template <bool IsLeft>
+  bool advanceMatchImpl();
+
+  // Handles output generation when only one side of the join has data
+  // available. Processes unmatched rows for outer joins when the other side is
+  // exhausted.
+  RowVectorPtr handleSingleSideOutput();
 
   // Properly resizes and produces the current output vector if one is
   // available.
@@ -309,6 +361,16 @@ class MergeJoin : public Operator {
   // method. For an anti join without a filter, we must specifically exclude
   // rows from the left side that have a match on the right.
   RowVectorPtr filterOutputForAntiJoin(const RowVectorPtr& output);
+
+  // Clears the current left input batch (input_) by setting it to nullptr.
+  // Called when the left batch has been fully processed or when resetting
+  // state during match processing.
+  void clearLeftInput();
+
+  // Clears the current right input batch (rightInput_) by setting it to
+  // nullptr. Called when the right batch has been fully processed or when
+  // resetting state during match processing.
+  void clearRightInput();
 
   // As we populate the results of the join, we track whether a given
   // output row is a result of a match between left and right sides or a miss.
@@ -394,11 +456,12 @@ class MergeJoin : public Operator {
     // rows that correspond to a single left-side row. Use
     // 'noMoreFilterResults' to make sure 'onMiss' is called for the last
     // left-side row.
-    template <typename TOnMiss>
+    template <typename TOnMiss, typename TOnMatch>
     void processFilterResult(
         vector_size_t outputIndex,
         bool passed,
-        TOnMiss onMiss) {
+        const TOnMiss& onMiss,
+        const TOnMatch& onMatch) {
       const auto rowNumber = rawLeftRowNumbers_[outputIndex];
       if (currentLeftRowNumber_ != rowNumber) {
         if (currentRow_ != -1 && !currentRowPassed_) {
@@ -412,6 +475,7 @@ class MergeJoin : public Operator {
       }
 
       if (passed) {
+        onMatch(outputIndex, /*firstMatch=*/!currentRowPassed_);
         currentRowPassed_ = true;
       }
     }
@@ -561,12 +625,18 @@ class MergeJoin : public Operator {
   vector_size_t outputSize_;
 
   // A future that will be completed when right side input becomes available.
-  ContinueFuture futureRightSideInput_{ContinueFuture::makeEmpty()};
+  ContinueFuture rightSideInputFuture_{ContinueFuture::makeEmpty()};
 
   // True if all the right side data has been received.
   bool noMoreRightInput_{false};
 
   bool leftHasDrained_{false};
   bool rightHasDrained_{false};
+
+  // Stats for tracking matched rows from the left side
+  uint64_t matchedLeftRows_{0};
+
+  // Stats for tracking matched rows from the right side
+  uint64_t matchedRightRows_{0};
 };
 } // namespace facebook::velox::exec

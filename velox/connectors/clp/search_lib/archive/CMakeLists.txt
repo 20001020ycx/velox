@@ -17,11 +17,11 @@ velox_add_library(
   ClpArchiveCursor.cpp
   ClpArchiveJsonStringVectorLoader.cpp
   ClpArchiveVectorLoader.cpp
-  ClpQueryRunner.cpp)
+  ClpQueryRunner.cpp
+)
 
 velox_link_libraries(
   clp-s-archive-search
   PUBLIC clp_s::archive_reader velox_vector
-  PRIVATE clp_s::clp_dependencies clp_s::io clp_s::search clp_s::search::kql)
-
-target_compile_features(clp-s-archive-search PRIVATE cxx_std_20)
+  PRIVATE clp_s::clp_dependencies clp_s::io clp_s::search clp_s::search::kql
+)

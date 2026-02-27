@@ -32,23 +32,35 @@ velox_add_library(
   EntropyAggregates.cpp
   GeometricMeanAggregate.cpp
   HistogramAggregate.cpp
+  KHyperLogLogAggregate.cpp
   MapAggAggregate.cpp
   MapUnionAggregate.cpp
   MapUnionSumAggregate.cpp
   MaxSizeForStatsAggregate.cpp
   MergeAggregate.cpp
+  NumericHistogramAggregate.cpp
   MinMaxAggregates.cpp
   MaxByAggregate.cpp
   MinByAggregate.cpp
   MultiMapAggAggregate.cpp
   PrestoHasher.cpp
+  QDigestAggAggregate.cpp
   ReduceAgg.cpp
+  ReservoirSampleAggregate.cpp
   RegisterAggregateFunctions.cpp
+  NoisyAvgGaussianAggregate.cpp
   NoisyCountIfGaussianAggregate.cpp
+  NoisyCountGaussianAggregate.cpp
+  NoisyHelperFunctionFactory.cpp
+  NoisySumGaussianAggregate.cpp
+  NoisyApproxSfmAggregate.cpp
   SetAggregates.cpp
+  SetDigestAggregate.cpp
   SumAggregate.cpp
   SumDataSizeForStatsAggregate.cpp
-  VarianceAggregates.cpp)
+  TDigestAggregate.cpp
+  VarianceAggregates.cpp
+)
 
 velox_link_libraries(
   velox_aggregates
@@ -56,11 +68,20 @@ velox_link_libraries(
   velox_exec
   velox_expression
   velox_presto_serializer
+  velox_presto_types
   velox_functions_aggregates
   velox_functions_lib
   velox_functions_util
   velox_presto_types
-  Folly::folly)
+  velox_functions_sfm
+  Folly::folly
+)
+
+if(${VELOX_ENABLE_GEO})
+  velox_sources(velox_aggregates PRIVATE GeometryAggregate.cpp)
+  velox_link_libraries(velox_aggregates velox_functions_geo)
+  velox_compile_definitions(velox_aggregates PRIVATE VELOX_ENABLE_GEO)
+endif()
 
 if(${VELOX_BUILD_TESTING})
   add_subdirectory(tests)

@@ -32,17 +32,17 @@
 
 namespace facebook::velox {
 
-// Variable length string or binary type for use in vectors. This has
-// semantics similar to std::string_view or folly::StringPiece and
-// exposes a subset of the interface. If the string is 12 characters
-// or less, it is inlined and no reference is held. If it is longer, a
-// reference to the string is held and the 4 first characters are
-// cached in the StringView. This allows failing comparisons early and
-// reduces the CPU cache working set when dealing with short strings.
-//
-// Adapted from TU Munich Umbra and CWI DuckDB.
-//
-// TODO: Extend the interface to parity with folly::StringPiece as needed.
+/// Variable length string or binary type for use in vectors. This has
+/// semantics similar to std::string_view or folly::StringPiece and
+/// exposes a subset of the interface. If the string is 12 characters
+/// or less, it is inlined and no reference is held. If it is longer, a
+/// reference to the string is held and the 4 first characters are
+/// cached in the StringView. This allows failing comparisons early and
+/// reduces the CPU cache working set when dealing with short strings.
+///
+/// Adapted from TU Munich Umbra and CWI DuckDB.
+///
+/// TODO: Extend the interface to parity with folly::StringPiece as needed.
 struct StringView {
  public:
   using value_type = char;
@@ -77,11 +77,6 @@ struct StringView {
     }
   }
 
-  static StringView makeInline(std::string str) {
-    VELOX_DCHECK(isInline(str.size()));
-    return StringView{str};
-  }
-
   // Making StringView implicitly constructible/convertible from char* and
   // string literals, in order to allow for a more flexible API and optional
   // interoperability. E.g:
@@ -109,6 +104,18 @@ struct StringView {
 
   FOLLY_ALWAYS_INLINE static constexpr bool isInline(uint32_t size) {
     return size <= kInlineSize;
+  }
+
+  /// Convenience method to create an inline StringView. The API client is
+  /// reponsible for providing a string that is small enough to fit inline
+  /// (i.e <= kInlineSize).
+  static StringView makeInline(std::string_view input) {
+    VELOX_DCHECK(
+        isInline(input.size()),
+        "StringView::makeInline() requires an input string that fits "
+        "inline (got string size of {}).",
+        input.size());
+    return StringView{input};
   }
 
   const char* data() && = delete;
@@ -149,10 +156,6 @@ struct StringView {
                size_ - kPrefixSize) == 0;
   }
 
-  bool operator!=(const StringView& other) const {
-    return !(*this == other);
-  }
-
   // Returns 0, if this == other
   //       < 0, if this < other
   //       > 0, if this > other
@@ -176,20 +179,11 @@ struct StringView {
     return (result != 0) ? result : size_ - other.size_;
   }
 
-  bool operator<(const StringView& other) const {
-    return compare(other) < 0;
-  }
-
-  bool operator<=(const StringView& other) const {
-    return compare(other) <= 0;
-  }
-
-  bool operator>(const StringView& other) const {
-    return compare(other) > 0;
-  }
-
-  bool operator>=(const StringView& other) const {
-    return compare(other) >= 0;
+  auto operator<=>(const StringView& other) const {
+    const auto cmp = compare(other);
+    return cmp < 0 ? std::strong_ordering::less
+        : cmp > 0  ? std::strong_ordering::greater
+                   : std::strong_ordering::equal;
   }
 
   operator folly::StringPiece() && = delete;
@@ -277,8 +271,18 @@ struct StringView {
 //
 //   auto myStringView = "my string"_sv;
 //   auto vec = {"str1"_sv, "str2"_sv};
-inline StringView operator"" _sv(const char* str, size_t len) {
+inline StringView operator""_sv(const char* str, size_t len) {
   return StringView(str, len);
+}
+
+// Specializations needed for string conversion in folly/Conv.h.
+template <class TString>
+inline void toAppend(const StringView& value, TString* result) {
+  result->append(value);
+}
+
+inline size_t estimateSpaceNeeded(const StringView& value) {
+  return value.size();
 }
 
 } // namespace facebook::velox
@@ -293,6 +297,7 @@ struct hash<::facebook::velox::StringView> {
 } // namespace std
 
 namespace folly {
+
 template <>
 struct hasher<::facebook::velox::StringView> {
   size_t operator()(const ::facebook::velox::StringView view) const {

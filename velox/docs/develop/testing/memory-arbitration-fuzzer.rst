@@ -9,8 +9,8 @@ It works as follows:
 
 1. Data Generation: It starts by generating a random set of input data, also known as a vector. This data can
    have a variety of encodings and data layouts to ensure thorough testing.
-2. Plan Generation: Generate multiple plans with different query shapes. Currently, it supports HashJoin and
-   HashAggregation plans.
+2. Plan Generation: Generate multiple plans with different query shapes. Currently, it supports HashJoin,
+   HashAggregation, RowNumber, TopNRowNumber, and OrderBy plans.
 3. Query Execution: Create multiple threads, each thread randomly picks a plan with spill enabled or not, and repeatedly
    running this process until ${iteration_duration_sec} seconds. The query thread expects query to succeed or fail with
    query OOM or abort errors, otherwise it throws.
@@ -19,11 +19,11 @@ It works as follows:
 How to run
 ----------
 
-Use velox_memory_arbitration_fuzzer_test binary to run this fuzzer:
+Use velox_memory_arbitration_fuzzer binary to run this fuzzer:
 
 ::
 
-    velox/exec/tests/velox_memory_arbitration_fuzzer_test --seed 123 --duration_sec 60
+    velox/exec/tests/velox_memory_arbitration_fuzzer --seed 123 --duration_sec 60
 
 By default, the fuzzer will go through 10 iterations. Use --steps
 or --duration-sec flag to run fuzzer for longer. Use --seed to

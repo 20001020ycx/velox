@@ -27,8 +27,6 @@
 #include "velox/dwio/common/CacheInputStream.h"
 #include "velox/dwio/common/InputStream.h"
 
-DECLARE_int32(cache_load_quantum);
-
 namespace facebook::velox::dwio::common {
 
 struct CacheRequest {
@@ -57,24 +55,28 @@ class CachedBufferedInput : public BufferedInput {
   CachedBufferedInput(
       std::shared_ptr<ReadFile> readFile,
       const MetricsLogPtr& metricsLog,
-      uint64_t fileNum,
+      StringIdLease fileNum,
       cache::AsyncDataCache* cache,
       std::shared_ptr<cache::ScanTracker> tracker,
-      uint64_t groupId,
+      StringIdLease groupId,
       std::shared_ptr<IoStatistics> ioStats,
       std::shared_ptr<filesystems::File::IoStats> fsStats,
       folly::Executor* executor,
-      const io::ReaderOptions& readerOptions)
+      const io::ReaderOptions& readerOptions,
+      folly::F14FastMap<std::string, std::string> fileReadOps = {})
       : BufferedInput(
             std::move(readFile),
             readerOptions.memoryPool(),
             metricsLog,
             ioStats.get(),
-            fsStats.get()),
+            fsStats.get(),
+            kMaxMergeDistance,
+            std::nullopt,
+            std::move(fileReadOps)),
         cache_(cache),
-        fileNum_(fileNum),
+        fileNum_(std::move(fileNum)),
         tracker_(std::move(tracker)),
-        groupId_(groupId),
+        groupId_(std::move(groupId)),
         ioStats_(std::move(ioStats)),
         fsStats_(std::move(fsStats)),
         executor_(executor),
@@ -85,19 +87,19 @@ class CachedBufferedInput : public BufferedInput {
 
   CachedBufferedInput(
       std::shared_ptr<ReadFileInputStream> input,
-      uint64_t fileNum,
+      StringIdLease fileNum,
       cache::AsyncDataCache* cache,
       std::shared_ptr<cache::ScanTracker> tracker,
-      uint64_t groupId,
+      StringIdLease groupId,
       std::shared_ptr<IoStatistics> ioStats,
       std::shared_ptr<filesystems::File::IoStats> fsStats,
       folly::Executor* executor,
       const io::ReaderOptions& readerOptions)
       : BufferedInput(std::move(input), readerOptions.memoryPool()),
         cache_(cache),
-        fileNum_(fileNum),
+        fileNum_(std::move(fileNum)),
         tracker_(std::move(tracker)),
-        groupId_(groupId),
+        groupId_(std::move(groupId)),
         ioStats_(std::move(ioStats)),
         fsStats_(std::move(fsStats)),
         executor_(executor),
@@ -140,7 +142,7 @@ class CachedBufferedInput : public BufferedInput {
   void setNumStripes(int32_t numStripes) override {
     auto stats = tracker_->fileGroupStats();
     if (stats) {
-      stats->recordFile(fileNum_, groupId_, numStripes);
+      stats->recordFile(fileNum_.id(), groupId_.id(), numStripes);
     }
   }
 
@@ -210,9 +212,9 @@ class CachedBufferedInput : public BufferedInput {
   }
 
   cache::AsyncDataCache* const cache_;
-  const uint64_t fileNum_;
+  const StringIdLease fileNum_;
   const std::shared_ptr<cache::ScanTracker> tracker_;
-  const uint64_t groupId_;
+  const StringIdLease groupId_;
   const std::shared_ptr<IoStatistics> ioStats_;
   const std::shared_ptr<filesystems::File::IoStats> fsStats_;
   folly::Executor* const executor_;

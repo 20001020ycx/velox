@@ -18,6 +18,7 @@
 
 #include "velox/common/process/TraceContext.h"
 #include "velox/exec/Task.h"
+#include "velox/vector/LazyVector.h"
 
 using facebook::velox::common::testutil::TestValue;
 
@@ -141,10 +142,12 @@ std::optional<common::SpillConfig> DriverCtx::makeSpillConfig(
       queryConfig.maxSpillRunRows(),
       queryConfig.writerFlushThresholdBytes(),
       queryConfig.spillCompressionKind(),
+      queryConfig.spillNumMaxMergeFiles(),
       queryConfig.spillPrefixSortEnabled()
           ? std::optional<common::PrefixSortConfig>(prefixSortConfig())
           : std::nullopt,
-      queryConfig.spillFileCreateConfig());
+      queryConfig.spillFileCreateConfig(),
+      queryConfig.windowSpillMinReadBatchRows());
 }
 
 std::atomic_uint64_t BlockingState::numBlockedDrivers_{0};
@@ -158,9 +161,10 @@ BlockingState::BlockingState(
       future_(std::move(future)),
       operator_(op),
       reason_(reason),
-      sinceUs_(std::chrono::duration_cast<std::chrono::microseconds>(
-                   std::chrono::high_resolution_clock::now().time_since_epoch())
-                   .count()) {
+      sinceUs_(
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::high_resolution_clock::now().time_since_epoch())
+              .count()) {
   // Set before leaving the thread.
   driver_->state().hasBlockingFuture = true;
   numBlockedDrivers_++;
@@ -247,6 +251,8 @@ void Driver::init(
     std::vector<std::unique_ptr<Operator>> operators) {
   VELOX_CHECK_NULL(ctx_);
   ctx_ = std::move(ctx);
+  enableOperatorBatchSizeStats_ =
+      ctx_->queryConfig().enableOperatorBatchSizeStats();
   cpuSliceMs_ = task()->driverCpuTimeSliceLimitMs();
   VELOX_CHECK(operators_.empty());
   operators_ = std::move(operators);
@@ -262,55 +268,6 @@ void Driver::initializeOperators() {
   for (auto& op : operators_) {
     op->initialize();
   }
-}
-
-void Driver::pushdownFilters(int operatorIndex) {
-  auto* op = operators_[operatorIndex].get();
-  const auto& filters = op->getDynamicFilters();
-  if (filters.empty()) {
-    return;
-  }
-  const auto& planNodeId = op->planNodeId();
-
-  op->addRuntimeStat("dynamicFiltersProduced", RuntimeCounter(filters.size()));
-
-  // Walk operator list upstream and find a place to install the filters.
-  for (const auto& entry : filters) {
-    auto channel = entry.first;
-    for (auto i = operatorIndex - 1; i >= 0; --i) {
-      auto prevOp = operators_[i].get();
-
-      if (i == 0) {
-        // Source operator.
-        VELOX_CHECK(
-            prevOp->canAddDynamicFilter(),
-            "Cannot push down dynamic filters produced by {}",
-            op->toString());
-        prevOp->addDynamicFilter(planNodeId, channel, entry.second);
-        prevOp->addRuntimeStat("dynamicFiltersAccepted", RuntimeCounter(1));
-        break;
-      }
-
-      const auto& identityProjections = prevOp->identityProjections();
-      const auto inputChannel =
-          getIdentityProjection(identityProjections, channel);
-      if (!inputChannel.has_value()) {
-        // Filter channel is not an identity projection.
-        VELOX_CHECK(
-            prevOp->canAddDynamicFilter(),
-            "Cannot push down dynamic filters produced by {}",
-            op->toString());
-        prevOp->addDynamicFilter(planNodeId, channel, entry.second);
-        prevOp->addRuntimeStat("dynamicFiltersAccepted", RuntimeCounter(1));
-        break;
-      }
-
-      // Continue walking upstream.
-      channel = inputChannel.value();
-    }
-  }
-
-  op->clearDynamicFilters();
 }
 
 RowVectorPtr Driver::next(
@@ -456,11 +413,12 @@ CpuWallTiming Driver::processLazyIoStats(
   cpuDelta = std::min<int64_t>(cpuDelta, timing.cpuNanos);
   wallDelta = std::min<int64_t>(wallDelta, timing.wallNanos);
   lockStats = operators_[0]->stats().wlock();
-  lockStats->getOutputTiming.add(CpuWallTiming{
-      1,
-      static_cast<uint64_t>(wallDelta),
-      static_cast<uint64_t>(cpuDelta),
-  });
+  lockStats->getOutputTiming.add(
+      CpuWallTiming{
+          1,
+          static_cast<uint64_t>(wallDelta),
+          static_cast<uint64_t>(cpuDelta),
+      });
   lockStats->inputBytes += inputBytesDelta;
   lockStats->outputBytes += inputBytesDelta;
   return CpuWallTiming{
@@ -482,6 +440,12 @@ bool Driver::checkUnderArbitration(ContinueFuture* future) {
 }
 
 namespace {
+inline void addInput(Operator* op, const RowVectorPtr& input) {
+  if (FOLLY_LIKELY(!op->dryRun())) {
+    op->addInput(input);
+  }
+}
+
 inline void getOutput(Operator* op, RowVectorPtr& result) {
   result = op->getOutput();
   if (FOLLY_UNLIKELY(op->shouldDropOutput())) {
@@ -618,15 +582,14 @@ StopReason Driver::runInternal(
                   kOpMethodGetOutput);
               if (intermediateResult) {
                 validateOperatorOutputResult(intermediateResult, *op);
-                resultBytes = intermediateResult->estimateFlatSize();
-                {
-                  auto lockedStats = op->stats().wlock();
-                  lockedStats->addOutputVector(
-                      resultBytes, intermediateResult->size());
+                if (enableOperatorBatchSizeStats()) {
+                  resultBytes = intermediateResult->estimateFlatSize();
                 }
+                auto lockedStats = op->stats().wlock();
+                lockedStats->addOutputVector(
+                    resultBytes, intermediateResult->size());
               }
             });
-            pushdownFilters(i);
             if (intermediateResult) {
               withDeltaCpuWallTimer(
                   nextOp, &OperatorStats::addInputTiming, [&]() {
@@ -641,7 +604,7 @@ StopReason Driver::runInternal(
                         nextOp);
 
                     CALL_OPERATOR(
-                        nextOp->addInput(intermediateResult),
+                        addInput(nextOp, intermediateResult),
                         nextOp,
                         curOperatorId_ + 1,
                         kOpMethodAddInput);
@@ -708,12 +671,12 @@ StopReason Driver::runInternal(
                 getOutput(op, result), op, curOperatorId_, kOpMethodGetOutput);
             if (result) {
               validateOperatorOutputResult(result, *op);
-
-              {
-                auto lockedStats = op->stats().wlock();
-                lockedStats->addOutputVector(
-                    result->estimateFlatSize(), result->size());
+              vector_size_t resultByteSize{0};
+              if (enableOperatorBatchSizeStats()) {
+                resultByteSize = result->estimateFlatSize();
               }
+              auto lockedStats = op->stats().wlock();
+              lockedStats->addOutputVector(resultByteSize, result->size());
             }
           });
 
@@ -737,14 +700,13 @@ StopReason Driver::runInternal(
             close();
             return StopReason::kAtEnd;
           }
-          pushdownFilters(i);
           continue;
         }
       }
     }
   } catch (velox::VeloxException&) {
     task()->setError(std::current_exception());
-    // The CancelPoolGuard will close 'self' and remove from Task.
+    // The CancelGuard will close 'self' and remove from Task.
     return StopReason::kAlreadyTerminated;
   } catch (std::exception&) {
     task()->setError(std::current_exception());
@@ -840,6 +802,19 @@ void Driver::closeOperators() {
   for (auto& op : operators_) {
     auto stats = op->stats(true);
     stats.numDrivers = 1;
+
+    // Calculate this driver's CPU time for this specific operator and add it as
+    // a runtime stat. This will be aggregated across all drivers, with the max
+    // field containing the CPU time from the longest running driver.
+    uint64_t operatorCpuNanos = stats.addInputTiming.cpuNanos +
+        stats.getOutputTiming.cpuNanos + stats.finishTiming.cpuNanos +
+        stats.isBlockedTiming.cpuNanos;
+
+    if (operatorCpuNanos > 0) {
+      stats.runtimeStats[OperatorStats::kDriverCpuTime] =
+          RuntimeMetric(operatorCpuNanos, RuntimeCounter::Unit::kNanos);
+    }
+
     task()->addOperatorStats(stats);
   }
 }
@@ -968,22 +943,23 @@ bool Driver::mayPushdownAggregation(Operator* aggregation) const {
       aggregation->toString());
 }
 
-std::unordered_set<column_index_t> Driver::canPushdownFilters(
-    const Operator* filterSource,
-    const std::vector<column_index_t>& channels) const {
-  int filterSourceIndex = -1;
+int Driver::operatorIndex(const Operator* op) const {
+  int index = -1;
   for (auto i = 0; i < operators_.size(); ++i) {
-    auto op = operators_[i].get();
-    if (filterSource == op) {
-      filterSourceIndex = i;
+    if (op == operators_[i].get()) {
+      index = i;
       break;
     }
   }
   VELOX_CHECK_GE(
-      filterSourceIndex,
-      0,
-      "Operator not found in its Driver: {}",
-      filterSource->toString());
+      index, 0, "Operator not found in its Driver: {}", op->toString());
+  return index;
+}
+
+std::unordered_set<column_index_t> Driver::canPushdownFilters(
+    const Operator* filterSource,
+    const std::vector<column_index_t>& channels) const {
+  const int filterSourceIndex = operatorIndex(filterSource);
 
   std::unordered_set<column_index_t> supportedChannels;
   for (auto i = 0; i < channels.size(); ++i) {
@@ -1016,6 +992,73 @@ std::unordered_set<column_index_t> Driver::canPushdownFilters(
   }
 
   return supportedChannels;
+}
+
+int Driver::pushdownFilters(
+    Operator* filterSource,
+    const std::vector<column_index_t>& channels,
+    const std::function<bool(column_index_t, common::FilterPtr&)>& makeFilter) {
+  const int filterSourceIndex = operatorIndex(filterSource);
+  int numFiltersProduced = 0;
+  std::vector<int> numFiltersAccepted(filterSourceIndex);
+  for (auto i = 0; i < channels.size(); ++i) {
+    auto channel = channels[i];
+    int j = -1;
+    for (j = filterSourceIndex - 1; j >= 0; --j) {
+      auto* prevOp = operators_[j].get();
+      if (j == 0) {
+        // Source operator.
+        break;
+      }
+      const auto& identityProjections = prevOp->identityProjections();
+      const auto inputChannel =
+          getIdentityProjection(identityProjections, channel);
+      if (!inputChannel.has_value()) {
+        // Filter channel is not an identity projection.
+        break;
+      }
+      // Continue walking upstream.
+      channel = inputChannel.value();
+    }
+    if (!(j >= 0 && operators_[j]->canAddDynamicFilter())) {
+      continue;
+    }
+    common::FilterPtr filter;
+    auto lkSource = pushdownFilters_->at(filterSourceIndex).wlock();
+    if (makeFilter(i, filter)) {
+      if (filter) {
+        // A new filter is generated.
+        auto lkTarget = pushdownFilters_->at(j).wlock();
+        common::Filter::merge(filter, lkTarget->filters[channel]);
+        lkTarget->dynamicFilteredColumns.insert(channel);
+      } else {
+        // Same filter is already generated by another operator on the same
+        // node.  Just do some sanity check here.
+        auto lkTarget = pushdownFilters_->at(j).rlock();
+        VELOX_CHECK(
+            lkTarget->filters.at(channel) &&
+            lkTarget->dynamicFilteredColumns.contains(channel));
+      }
+      ++numFiltersProduced;
+      ++numFiltersAccepted[j];
+    }
+  }
+  for (int j = 0; j < filterSourceIndex; ++j) {
+    if (numFiltersAccepted[j] == 0) {
+      continue;
+    }
+    {
+      auto lk = pushdownFilters_->at(j).rlock();
+      operators_[j]->addDynamicFilterLocked(filterSource->planNodeId(), *lk);
+    }
+    operators_[j]->addRuntimeStat(
+        "dynamicFiltersAccepted", RuntimeCounter(numFiltersAccepted[j]));
+  }
+  if (numFiltersProduced > 0) {
+    filterSource->addRuntimeStat(
+        "dynamicFiltersProduced", RuntimeCounter(numFiltersProduced));
+  }
+  return numFiltersProduced;
 }
 
 Operator* Driver::findOperator(std::string_view planNodeId) const {
@@ -1065,7 +1108,7 @@ std::string Driver::toString() const {
     std::string blockedOp = (blockedOperatorId_ < operators_.size())
         ? operators_[blockedOperatorId_]->toString()
         : "<unknown op>";
-    out << "blocked (" << blockingReasonToString(blockingReason_) << " "
+    out << "blocked (" << BlockingReasonName::toName(blockingReason_) << " "
         << blockedOp << "), ";
   } else if (state_.isEnqueued) {
     out << "enqueued ";
@@ -1076,9 +1119,13 @@ std::string Driver::toString() const {
   }
 
   out << "{Operators: ";
-  for (auto& op : operators_) {
-    out << op->toString() << ", ";
-  }
+  std::vector<std::string> opStrs;
+  opStrs.reserve(operators_.size());
+  std::ranges::transform(
+      operators_, std::back_inserter(opStrs), [](const auto& op) {
+        return op->toString();
+      });
+  out << folly::join(", ", opStrs);
   out << "}";
   const auto ocs = opCallStatus();
   if (!ocs.empty()) {
@@ -1103,7 +1150,7 @@ Driver::CancelGuard::~CancelGuard() {
 
 folly::dynamic Driver::toJson() const {
   folly::dynamic obj = folly::dynamic::object;
-  obj["blockingReason"] = blockingReasonToString(blockingReason_);
+  obj["blockingReason"] = BlockingReasonName::toName(blockingReason_);
   obj["state"] = state_.toJson();
   obj["closed"] = closed_.load();
   obj["queueTimeStartMicros"] = queueTimeStartUs_;
@@ -1196,40 +1243,6 @@ StopReason Driver::blockDriver(
 
 std::string Driver::label() const {
   return fmt::format("<Driver {}:{}>", task()->taskId(), ctx_->driverId);
-}
-
-std::string blockingReasonToString(BlockingReason reason) {
-  switch (reason) {
-    case BlockingReason::kNotBlocked:
-      return "kNotBlocked";
-    case BlockingReason::kWaitForConsumer:
-      return "kWaitForConsumer";
-    case BlockingReason::kWaitForSplit:
-      return "kWaitForSplit";
-    case BlockingReason::kWaitForProducer:
-      return "kWaitForProducer";
-    case BlockingReason::kWaitForJoinBuild:
-      return "kWaitForJoinBuild";
-    case BlockingReason::kWaitForJoinProbe:
-      return "kWaitForJoinProbe";
-    case BlockingReason::kWaitForMergeJoinRightSide:
-      return "kWaitForMergeJoinRightSide";
-    case BlockingReason::kWaitForMemory:
-      return "kWaitForMemory";
-    case BlockingReason::kWaitForConnector:
-      return "kWaitForConnector";
-    case BlockingReason::kYield:
-      return "kYield";
-    case BlockingReason::kWaitForArbitration:
-      return "kWaitForArbitration";
-    case BlockingReason::kWaitForScanScaleUp:
-      return "kWaitForScanScaleUp";
-    case BlockingReason::kWaitForIndexLookup:
-      return "kWaitForIndexLookup";
-    default:
-      VELOX_UNREACHABLE(
-          fmt::format("Unknown blocking reason {}", static_cast<int>(reason)));
-  }
 }
 
 DriverThreadContext* driverThreadContext() {

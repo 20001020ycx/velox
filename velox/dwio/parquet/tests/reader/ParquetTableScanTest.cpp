@@ -69,8 +69,7 @@ class ParquetTableScanTest : public HiveConnectorTestBase {
 
   void assertSelectWithAssignments(
       std::vector<std::string>&& outputColumnNames,
-      std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>&
-          assignments,
+      const connector::ColumnHandleMap& assignments,
       const std::string& sql) {
     auto rowType = getRowType(std::move(outputColumnNames));
     auto plan = PlanBuilder()
@@ -84,9 +83,7 @@ class ParquetTableScanTest : public HiveConnectorTestBase {
       const std::vector<std::string>& subfieldFilters,
       const std::string& remainingFilter,
       const std::string& sql,
-      const std::unordered_map<
-          std::string,
-          std::shared_ptr<connector::ColumnHandle>>& assignments = {}) {
+      const connector::ColumnHandleMap& assignments = {}) {
     auto rowType = getRowType(std::move(outputColumnNames));
     parse::ParseOptions options;
     options.parseDecimalAsDouble = false;
@@ -293,6 +290,11 @@ class ParquetTableScanTest : public HiveConnectorTestBase {
         {},
         "t == TIMESTAMP '2022-12-23 03:56:01'",
         "SELECT t from tmp where t == TIMESTAMP '2022-12-23 03:56:01'");
+    assertSelectWithFilter(
+        {"t"},
+        {},
+        "not(eq(t, TIMESTAMP '2000-09-12 22:36:29'))",
+        "SELECT t from tmp where t != TIMESTAMP '2000-09-12 22:36:29'");
   }
 
  private:
@@ -426,6 +428,39 @@ TEST_F(ParquetTableScanTest, aggregatePushdown) {
   assertEqualVectors(rows->childAt(1), valuesVector);
 }
 
+TEST_F(ParquetTableScanTest, aggregatePushdownToSmallPages) {
+  const std::vector<std::string> columnNames = {"a", "b", "c"};
+  const auto expectedRowVector = makeRowVector(
+      {makeFlatVector<int16_t>({1, 2, 4}),
+       makeFlatVector<int64_t>({7, 9, 13})});
+  const auto outputType = ROW(columnNames, {SMALLINT(), SMALLINT(), VARCHAR()});
+  std::vector<RowVectorPtr> data;
+  for (auto row = 0; row < 10; ++row) {
+    data.emplace_back(makeRowVector(
+        columnNames,
+        {
+            makeFlatVector<int16_t>({static_cast<int16_t>(row % 5)}),
+            makeFlatVector<int16_t>({static_cast<int16_t>(row)}),
+            makeFlatVector<std::string>({std::to_string(row)}),
+        }));
+  }
+  const auto filePath = TempFilePath::create();
+  WriterOptions options;
+  options.dataPageSize = 1;
+  writeToParquetFile(filePath->getPath(), data, options);
+  const auto plan =
+      PlanBuilder(pool())
+          .tableScan(
+              outputType,
+              {},
+              "c <> '' AND a in (1::smallint, 2::smallint, 4::smallint)")
+          .singleAggregation({"a"}, {"sum(b) as s"})
+          .planNode();
+  AssertQueryBuilder(plan)
+      .split(makeSplit(filePath->getPath()))
+      .assertResults(expectedRowVector);
+}
+
 TEST_F(ParquetTableScanTest, countStar) {
   // sample.parquet holds two columns (a: BIGINT, b: DOUBLE) and
   // 20 rows.
@@ -537,8 +572,77 @@ TEST_F(ParquetTableScanTest, array) {
               vector,
           }));
 
-  assertSelectWithFilter(
-      {"repeatedInt"}, {}, "", "SELECT UNNEST(array[array[1,2,3]])");
+  assertSelectWithFilter({"repeatedInt"}, {}, "", "SELECT [1,2,3]");
+
+  // Set the requested type for unannotated array.
+  auto rowType = ROW({"repeatedInt"}, {ARRAY(INTEGER())});
+  auto plan = PlanBuilder(pool_.get())
+                  .tableScan(rowType, {}, "", rowType, {})
+                  .planNode();
+
+  AssertQueryBuilder(plan, duckDbQueryRunner_)
+      .splits({makeSplit(getExampleFilePath("old_repeated_int.parquet"))})
+      .assertResults("SELECT [1,2,3]");
+
+  // Throws when reading repeated values as scalar type.
+  rowType = ROW({"repeatedInt"}, {INTEGER()});
+  plan = PlanBuilder(pool_.get())
+             .tableScan(rowType, {}, "", rowType, {})
+             .planNode();
+  VELOX_ASSERT_THROW(
+      AssertQueryBuilder(plan, duckDbQueryRunner_)
+          .splits({makeSplit(getExampleFilePath("old_repeated_int.parquet"))})
+          .assertResults(""),
+      "Requested type must be array");
+
+  rowType = ROW({"mystring"}, {ARRAY(VARCHAR())});
+  plan = PlanBuilder(pool_.get())
+             .tableScan(rowType, {}, "", rowType, {})
+             .planNode();
+
+  AssertQueryBuilder(plan, duckDbQueryRunner_)
+      .splits({makeSplit(getExampleFilePath("proto_repeated_string.parquet"))})
+      .assertResults(
+          "SELECT UNNEST(array[array['hello', 'world'], array['good','bye'], array['one', 'two', 'three']])");
+
+  rowType =
+      ROW({"primitive", "myComplex"},
+          {INTEGER(),
+           ARRAY(
+               ROW({"id", "repeatedMessage"},
+                   {INTEGER(), ARRAY(ROW({"someId"}, {INTEGER()}))}))});
+  plan = PlanBuilder(pool_.get())
+             .tableScan(rowType, {}, "", rowType, {})
+             .planNode();
+
+  // Construct the expected vector.
+  auto someIdVector = makeArrayOfRowVector(
+      ROW({"someId"}, {INTEGER()}),
+      {
+          {variant::row({3})},
+          {variant::row({6})},
+          {variant::row({9})},
+      });
+  auto rowVector = makeRowVector(
+      {"id", "repeatedMessage"},
+      {
+          makeFlatVector<int32_t>({1, 4, 7}),
+          someIdVector,
+      });
+  auto expected = makeRowVector(
+      {"primitive", "myComplex"},
+      {
+          makeFlatVector<int32_t>({2, 5, 8}),
+          makeArrayVector({0, 1, 2}, rowVector),
+      });
+
+  AssertQueryBuilder(plan, duckDbQueryRunner_)
+      .connectorSessionProperty(
+          kHiveConnectorId,
+          connector::hive::HiveConfig::kParquetUseColumnNamesSession,
+          "true")
+      .splits({makeSplit(getExampleFilePath("nested_array_struct.parquet"))})
+      .assertResults(expected);
 }
 
 // Optional array with required elements.
@@ -655,44 +759,55 @@ TEST_F(ParquetTableScanTest, filterOnNestedArray) {
 }
 
 TEST_F(ParquetTableScanTest, readAsLowerCase) {
-  auto plan = PlanBuilder(pool_.get())
-                  .tableScan(ROW({"a"}, {BIGINT()}), {}, "")
-                  .planNode();
-  CursorParameters params;
-  std::shared_ptr<folly::Executor> executor =
-      std::make_shared<folly::CPUThreadPoolExecutor>(
-          std::thread::hardware_concurrency());
-  std::shared_ptr<core::QueryCtx> queryCtx =
-      core::QueryCtx::create(executor.get());
-  std::unordered_map<std::string, std::string> session = {
-      {std::string(
-           connector::hive::HiveConfig::kFileColumnNamesReadAsLowerCaseSession),
-       "true"}};
-  queryCtx->setConnectorSessionOverridesUnsafe(
-      kHiveConnectorId, std::move(session));
-  params.queryCtx = queryCtx;
-  params.planNode = plan;
-  const int numSplitsPerFile = 1;
+  auto vectors = {makeRowVector(
+      {"A", "b"},
+      {
+          makeFlatVector<int64_t>(20, [](auto row) { return row + 1; }),
+          makeFlatVector<double>(20, [](auto row) { return row + 1; }),
+      })};
+  auto filePath = TempFilePath::create();
+  WriterOptions options;
+  writeToParquetFile(filePath->getPath(), vectors, options);
+  createDuckDbTable(vectors);
 
-  auto addSplits = [&](exec::TaskCursor* taskCursor) {
-    if (taskCursor->noMoreSplits()) {
-      return;
-    }
-    auto& task = taskCursor->task();
-    auto const splits = HiveConnectorTestBase::makeHiveConnectorSplits(
-        {getExampleFilePath("upper.parquet")},
-        numSplitsPerFile,
-        dwio::common::FileFormat::PARQUET);
-    for (const auto& split : splits) {
-      task->addSplit("0", exec::Split(split));
-    }
-    task->noMoreSplits("0");
-    taskCursor->setNoMoreSplits();
-  };
-  auto result = readCursor(params, addSplits);
-  ASSERT_TRUE(waitForTaskCompletion(result.first->task().get()));
-  assertEqualResults(
-      result.second, {makeRowVector({"a"}, {makeFlatVector<int64_t>({0, 1})})});
+  auto plan = PlanBuilder().tableScan(ROW({"a"}, {BIGINT()})).planNode();
+  auto split = makeSplit(filePath->getPath());
+
+  AssertQueryBuilder(plan, duckDbQueryRunner_)
+      .connectorSessionProperty(
+          kHiveConnectorId,
+          connector::hive::HiveConfig::kFileColumnNamesReadAsLowerCaseSession,
+          "true")
+      .split(split)
+      .assertResults("SELECT A FROM tmp");
+
+  // Test reading table with non-ascii names.
+  auto vectorsNonAsciiNames = {makeRowVector(
+      {"Товары", "国Ⅵ", "\uFF21", "\uFF22"},
+      {
+          makeFlatVector<int64_t>(20, [](auto row) { return row + 1; }),
+          makeFlatVector<double>(20, [](auto row) { return row + 1; }),
+          makeFlatVector<float>(20, [](auto row) { return row + 1; }),
+          makeFlatVector<int32_t>(20, [](auto row) { return row + 1; }),
+      })};
+  filePath = TempFilePath::create();
+  writeToParquetFile(filePath->getPath(), vectorsNonAsciiNames, options);
+  createDuckDbTable(vectorsNonAsciiNames);
+
+  plan = PlanBuilder()
+             .tableScan(
+                 ROW({"товары", "国ⅵ", "\uFF41", "\uFF42"},
+                     {BIGINT(), DOUBLE(), REAL(), INTEGER()}))
+             .planNode();
+  split = makeSplit(filePath->getPath());
+
+  AssertQueryBuilder(plan, duckDbQueryRunner_)
+      .connectorSessionProperty(
+          kHiveConnectorId,
+          connector::hive::HiveConfig::kFileColumnNamesReadAsLowerCaseSession,
+          "true")
+      .split(split)
+      .assertResults("SELECT * FROM tmp");
 }
 
 TEST_F(ParquetTableScanTest, rowIndex) {
@@ -714,8 +829,7 @@ TEST_F(ParquetTableScanTest, rowIndex) {
           }),
       std::nullopt,
       std::unordered_map<std::string, std::string>{{kPath, filePath}});
-  std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>
-      assignments;
+  connector::ColumnHandleMap assignments;
   assignments["a"] = std::make_shared<connector::hive::HiveColumnHandle>(
       "a",
       connector::hive::HiveColumnHandle::ColumnType::kRegular,
@@ -812,16 +926,14 @@ TEST_F(ParquetTableScanTest, filterNullIcebergPartition) {
       {"c1 IS NOT NULL"},
       "",
       "SELECT c0, c1 FROM tmp WHERE c1 IS NOT NULL",
-      std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>{
-          {"c0", c0}, {"c1", c1}});
+      connector::ColumnHandleMap{{"c0", c0}, {"c1", c1}});
 
   assertSelectWithFilter(
       {"c0", "c1"},
       {"c1 IS NULL"},
       "",
       "SELECT c0, c1 FROM tmp WHERE c1 IS NULL",
-      std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>{
-          {"c0", c0}, {"c1", c1}});
+      connector::ColumnHandleMap{{"c0", c0}, {"c1", c1}});
 }
 
 TEST_F(ParquetTableScanTest, sessionTimezone) {
@@ -1332,6 +1444,43 @@ TEST_F(ParquetTableScanTest, shortAndLongDecimalReadWithLargerPrecision) {
 
   assertEqualVectors(expectedDecimalVectors->childAt(0), rows->childAt(0));
   assertEqualVectors(expectedDecimalVectors->childAt(1), rows->childAt(1));
+}
+
+TEST_F(ParquetTableScanTest, inFilter) {
+  auto vectors = {makeRowVector(
+      {"name"},
+      {
+          makeNullableFlatVector<std::string>(
+              {"mary", "martin", "lucy", "alex", std::nullopt, "mary", "dan"}),
+      })};
+  auto filePath = TempFilePath::create();
+  WriterOptions options;
+  writeToParquetFile(filePath->getPath(), vectors, options);
+  createDuckDbTable(vectors);
+
+  // Test in.
+  auto plan = PlanBuilder(pool_.get())
+                  .tableScan(
+                      ROW({"name"}, {VARCHAR()}),
+                      {"name in ('alex', 'leo', 'mary', null, 'victor')"},
+                      "")
+                  .planNode();
+  AssertQueryBuilder(plan, duckDbQueryRunner_)
+      .split(makeSplit(filePath->getPath()))
+      .assertResults(
+          "SELECT name FROM tmp where name in ('alex', 'leo', 'mary', null, 'victor')");
+
+  // Test not in.
+  plan = PlanBuilder(pool_.get())
+             .tableScan(
+                 ROW({"name"}, {VARCHAR()}),
+                 {"name not in ('alex', 'leo', 'mary', null, 'victor')"},
+                 "")
+             .planNode();
+  AssertQueryBuilder(plan, duckDbQueryRunner_)
+      .split(makeSplit(filePath->getPath()))
+      .assertResults(
+          "SELECT name FROM tmp where name not in ('alex', 'leo', 'mary', null, 'victor')");
 }
 
 int main(int argc, char** argv) {

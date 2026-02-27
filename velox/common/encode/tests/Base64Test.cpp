@@ -25,27 +25,20 @@ namespace facebook::velox::encoding {
 class Base64Test : public ::testing::Test {};
 
 TEST_F(Base64Test, fromBase64) {
-  EXPECT_EQ(
-      "Hello, World!",
-      Base64::decode(folly::StringPiece("SGVsbG8sIFdvcmxkIQ==")));
+  EXPECT_EQ("Hello, World!", Base64::decode("SGVsbG8sIFdvcmxkIQ=="));
   EXPECT_EQ(
       "Base64 encoding is fun.",
-      Base64::decode(folly::StringPiece("QmFzZTY0IGVuY29kaW5nIGlzIGZ1bi4=")));
-  EXPECT_EQ(
-      "Simple text", Base64::decode(folly::StringPiece("U2ltcGxlIHRleHQ=")));
-  EXPECT_EQ(
-      "1234567890", Base64::decode(folly::StringPiece("MTIzNDU2Nzg5MA==")));
+      Base64::decode("QmFzZTY0IGVuY29kaW5nIGlzIGZ1bi4="));
+  EXPECT_EQ("Simple text", Base64::decode("U2ltcGxlIHRleHQ="));
+  EXPECT_EQ("1234567890", Base64::decode("MTIzNDU2Nzg5MA=="));
 
   // Check encoded strings without padding
-  EXPECT_EQ(
-      "Hello, World!",
-      Base64::decode(folly::StringPiece("SGVsbG8sIFdvcmxkIQ")));
+  EXPECT_EQ("Hello, World!", Base64::decode("SGVsbG8sIFdvcmxkIQ"));
   EXPECT_EQ(
       "Base64 encoding is fun.",
-      Base64::decode(folly::StringPiece("QmFzZTY0IGVuY29kaW5nIGlzIGZ1bi4")));
-  EXPECT_EQ(
-      "Simple text", Base64::decode(folly::StringPiece("U2ltcGxlIHRleHQ")));
-  EXPECT_EQ("1234567890", Base64::decode(folly::StringPiece("MTIzNDU2Nzg5MA")));
+      Base64::decode("QmFzZTY0IGVuY29kaW5nIGlzIGZ1bi4"));
+  EXPECT_EQ("Simple text", Base64::decode("U2ltcGxlIHRleHQ"));
+  EXPECT_EQ("1234567890", Base64::decode("MTIzNDU2Nzg5MA"));
 }
 
 TEST_F(Base64Test, calculateDecodedSizeProperSize) {
@@ -107,4 +100,75 @@ TEST_F(Base64Test, countsPaddingCorrectly) {
   EXPECT_EQ(1, Base64::numPadding("ABC=", 4));
   EXPECT_EQ(2, Base64::numPadding("AB==", 4));
 }
+
+TEST_F(Base64Test, calculateMimeDecodedSize) {
+  EXPECT_EQ(0, Base64::calculateMimeDecodedSize("", 0).value());
+  EXPECT_EQ(0, Base64::calculateMimeDecodedSize("#", 1).value());
+  EXPECT_EQ(3, Base64::calculateMimeDecodedSize("TWFu", 4).value());
+  EXPECT_EQ(1, Base64::calculateMimeDecodedSize("AQ==", 4).value());
+  EXPECT_EQ(2, Base64::calculateMimeDecodedSize("TWE=", 4).value());
+  EXPECT_EQ(3, Base64::calculateMimeDecodedSize("TWFu\r\n", 6).value());
+  EXPECT_EQ(3, Base64::calculateMimeDecodedSize("!TW!Fu!", 7).value());
+  EXPECT_EQ(1, Base64::calculateMimeDecodedSize("TQ", 2).value());
+  EXPECT_EQ(
+      Base64::calculateMimeDecodedSize("A", 1).error(),
+      Status::UserError(
+          "Input should at least have 2 bytes for base64 bytes."));
+}
+
+TEST_F(Base64Test, decodeMime) {
+  auto decodeMime = [](const std::string& in) {
+    size_t decSize =
+        Base64::calculateMimeDecodedSize(in.data(), in.size()).value();
+    std::string out(decSize, '\0');
+    auto result = Base64::decodeMime(in.data(), in.size(), out.data());
+    if (!result.ok()) {
+      VELOX_USER_FAIL(result.message());
+    }
+    return out;
+  };
+  EXPECT_EQ("", decodeMime(""));
+  EXPECT_EQ("Man", decodeMime("TWFu"));
+  EXPECT_EQ("ManMan", decodeMime("TWFu\r\nTWFu"));
+  EXPECT_EQ("\x01", decodeMime("AQ=="));
+  EXPECT_EQ("\xff\xee", decodeMime("/+4="));
+  VELOX_ASSERT_USER_THROW(
+      decodeMime("QUFBx"), "Last unit does not have enough valid bits");
+  VELOX_ASSERT_USER_THROW(
+      decodeMime("xx=y"), "Input byte array has wrong 4-byte ending unit");
+  VELOX_ASSERT_USER_THROW(
+      decodeMime("xx="), "Input byte array has wrong 4-byte ending unit");
+  VELOX_ASSERT_USER_THROW(
+      decodeMime("QUFB="), "Input byte array has wrong 4-byte ending unit");
+  VELOX_ASSERT_USER_THROW(
+      decodeMime("AQ==y"), "Input byte array has incorrect ending");
+}
+
+TEST_F(Base64Test, calculateMimeEncodedSize) {
+  EXPECT_EQ(0, Base64::calculateMimeEncodedSize(0));
+  EXPECT_EQ(8, Base64::calculateMimeEncodedSize(4));
+  EXPECT_EQ(76, Base64::calculateMimeEncodedSize(57));
+  EXPECT_EQ(82, Base64::calculateMimeEncodedSize(58));
+  EXPECT_EQ(274, Base64::calculateMimeEncodedSize(200));
+}
+
+TEST_F(Base64Test, encodeMime) {
+  auto encodeMime = [](const std::string& in) {
+    size_t len = Base64::calculateMimeEncodedSize(in.size());
+    std::string out(len, '\0');
+    Base64::encodeMime(in.data(), in.size(), out.data());
+    return out;
+  };
+  EXPECT_EQ("", encodeMime(""));
+  EXPECT_EQ("TWFu", encodeMime("Man"));
+  EXPECT_EQ("AQ==", encodeMime("\x01"));
+  EXPECT_EQ("/+4=", encodeMime("\xff\xee"));
+  EXPECT_EQ(
+      "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+      encodeMime(std::string(57, 'A')));
+  EXPECT_EQ(
+      "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB\r\nQQ==",
+      encodeMime(std::string(58, 'A')));
+}
+
 } // namespace facebook::velox::encoding

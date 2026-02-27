@@ -16,7 +16,8 @@ velox_add_library(
   STATIC
   ClpIrCursor.cpp
   ClpIrJsonStringVectorLoader.cpp
-  ClpIrVectorLoader.cpp)
+  ClpIrVectorLoader.cpp
+)
 
 velox_link_libraries(
   clp-s-ir-search
@@ -29,4 +30,5 @@ velox_link_libraries(
     clp_s::search
     clp_s::search::ast
     clp_s::search::kql
-    velox_vector)
+    velox_vector
+)

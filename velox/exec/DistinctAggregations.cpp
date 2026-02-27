@@ -32,9 +32,10 @@ class TypedDistinctAggregations : public DistinctAggregations {
       : pool_{pool},
         aggregates_{std::move(aggregates)},
         inputs_{aggregates_[0]->inputs},
-        inputType_(TypedDistinctAggregations::makeInputTypeForAccumulator(
-            inputType,
-            inputs_)) {}
+        inputType_(
+            TypedDistinctAggregations::makeInputTypeForAccumulator(
+                inputType,
+                inputs_)) {}
 
   /// Returns metadata about the accumulator used to store unique inputs.
   Accumulator accumulator() const override {
@@ -49,6 +50,9 @@ class TypedDistinctAggregations : public DistinctAggregations {
         },
         [this](folly::Range<char**> groups) {
           for (auto* group : groups) {
+            if (!isInitialized(group)) {
+              continue;
+            }
             auto* accumulator =
                 reinterpret_cast<AccumulatorType*>(group + offset_);
             accumulator->free(*allocator_);
@@ -126,11 +130,11 @@ class TypedDistinctAggregations : public DistinctAggregations {
 
       // Overwrite empty groups over the destructed groups to keep the container
       // in a well formed state.
-      raw_vector<int32_t> temp;
+      raw_vector<int32_t> indices(pool_);
       aggregate.function->initializeNewGroups(
           groups.data(),
           folly::Range<const int32_t*>(
-              iota(groups.size(), temp), groups.size()));
+              iota(groups.size(), indices), groups.size()));
     }
   }
 

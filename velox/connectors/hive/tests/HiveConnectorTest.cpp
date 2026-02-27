@@ -21,6 +21,7 @@
 #include "velox/connectors/hive/HiveConfig.h"
 #include "velox/connectors/hive/HiveConnectorUtil.h"
 #include "velox/connectors/hive/HiveDataSource.h"
+#include "velox/expression/ExprConstants.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
 
 namespace facebook::velox::connector::hive {
@@ -64,7 +65,7 @@ groupSubfields(const std::vector<Subfield>& subfields) {
 }
 
 bool mapKeyIsNotNull(const ScanSpec& mapSpec) {
-  return dynamic_cast<IsNotNull*>(
+  return dynamic_cast<const IsNotNull*>(
       mapSpec.childByName(ScanSpec::kMapKeysFieldName)->filter());
 }
 
@@ -92,8 +93,10 @@ TEST_F(HiveConnectorTest, makeScanSpecRequiredSubfieldsMultilevel) {
   auto rowType = ROW({{"c0", columnType}});
   auto subfields = makeSubfields({"c0.c0c1[3][\"foo\"].c0c1c0"});
   for (bool statsBasedFilterReorderDisabled : {false, true}) {
-    SCOPED_TRACE(fmt::format(
-        "statsBasedFilterReorderDisabled {}", statsBasedFilterReorderDisabled));
+    SCOPED_TRACE(
+        fmt::format(
+            "statsBasedFilterReorderDisabled {}",
+            statsBasedFilterReorderDisabled));
 
     auto scanSpec = makeScanSpec(
         rowType,
@@ -581,8 +584,8 @@ TEST_F(HiveConnectorTest, extractFiltersFromRemainingFilter) {
   auto expr = parseExpr("not (c0 > 0 or c1 > 0)", rowType);
   SubfieldFilters filters;
   double sampleRate = 1;
-  auto remaining = extractFiltersFromRemainingFilter(
-      expr, &evaluator, false, filters, sampleRate);
+  auto remaining =
+      extractFiltersFromRemainingFilter(expr, &evaluator, filters, sampleRate);
   ASSERT_FALSE(remaining);
   ASSERT_EQ(sampleRate, 1);
   ASSERT_EQ(filters.size(), 2);
@@ -591,8 +594,8 @@ TEST_F(HiveConnectorTest, extractFiltersFromRemainingFilter) {
 
   expr = parseExpr("not (c0 > 0 or c1 > c0)", rowType);
   filters.clear();
-  remaining = extractFiltersFromRemainingFilter(
-      expr, &evaluator, false, filters, sampleRate);
+  remaining =
+      extractFiltersFromRemainingFilter(expr, &evaluator, filters, sampleRate);
   ASSERT_EQ(sampleRate, 1);
   ASSERT_EQ(filters.size(), 1);
   ASSERT_GT(filters.count(Subfield("c0")), 0);
@@ -602,14 +605,49 @@ TEST_F(HiveConnectorTest, extractFiltersFromRemainingFilter) {
   expr = parseExpr(
       "not (c2 > 1::decimal(20, 0) or c2 < 0::decimal(20, 0))", rowType);
   filters.clear();
-  remaining = extractFiltersFromRemainingFilter(
-      expr, &evaluator, false, filters, sampleRate);
+  remaining =
+      extractFiltersFromRemainingFilter(expr, &evaluator, filters, sampleRate);
   ASSERT_EQ(sampleRate, 1);
   ASSERT_GT(filters.count(Subfield("c2")), 0);
   // Change these once HUGEINT filter merge is fixed.
   ASSERT_TRUE(remaining);
   ASSERT_EQ(
-      remaining->toString(), "not(lt(ROW[\"c2\"],cast 0 as DECIMAL(20, 0)))");
+      remaining->toString(), "not(lt(ROW[\"c2\"],cast(0 as DECIMAL(20, 0))))");
+
+  // parseExpr gives AND/OR with 2 arguments.  We need to construct the node
+  // manually to have more than 2.
+  expr = std::make_shared<core::CallTypedExpr>(
+      BOOLEAN(),
+      expression::kAnd,
+      parseExpr("c0 > 0", rowType),
+      parseExpr("c1 > 0", rowType),
+      parseExpr("c2 > 0::decimal(20, 0)", rowType));
+  filters.clear();
+  remaining =
+      extractFiltersFromRemainingFilter(expr, &evaluator, filters, sampleRate);
+  ASSERT_EQ(sampleRate, 1);
+  ASSERT_EQ(filters.size(), 3);
+  ASSERT_TRUE(filters.contains(Subfield("c0")));
+  ASSERT_TRUE(filters.contains(Subfield("c1")));
+  ASSERT_TRUE(filters.contains(Subfield("c2")));
+  ASSERT_FALSE(remaining);
+
+  expr = std::make_shared<core::CallTypedExpr>(
+      BOOLEAN(),
+      expression::kAnd,
+      parseExpr("c0 % 2 = 0", rowType),
+      parseExpr("c1 % 3 = 0", rowType),
+      parseExpr("c2 > 0::decimal(20, 0)", rowType));
+  filters.clear();
+  remaining =
+      extractFiltersFromRemainingFilter(expr, &evaluator, filters, sampleRate);
+  ASSERT_EQ(sampleRate, 1);
+  ASSERT_EQ(filters.size(), 1);
+  ASSERT_TRUE(filters.contains(Subfield("c2")));
+  ASSERT_TRUE(remaining);
+  ASSERT_EQ(
+      remaining->toString(),
+      "and(eq(mod(ROW[\"c0\"],2),0),eq(mod(ROW[\"c1\"],3),0))");
 }
 
 TEST_F(HiveConnectorTest, prestoTableSampling) {
@@ -620,8 +658,8 @@ TEST_F(HiveConnectorTest, prestoTableSampling) {
   auto expr = parseExpr("rand() < 0.5", rowType);
   SubfieldFilters filters;
   double sampleRate = 1;
-  auto remaining = extractFiltersFromRemainingFilter(
-      expr, &evaluator, false, filters, sampleRate);
+  auto remaining =
+      extractFiltersFromRemainingFilter(expr, &evaluator, filters, sampleRate);
   ASSERT_FALSE(remaining);
   ASSERT_EQ(sampleRate, 0.5);
   ASSERT_TRUE(filters.empty());
@@ -629,8 +667,8 @@ TEST_F(HiveConnectorTest, prestoTableSampling) {
   expr = parseExpr("c0 > 0 and rand() < 0.5", rowType);
   filters.clear();
   sampleRate = 1;
-  remaining = extractFiltersFromRemainingFilter(
-      expr, &evaluator, false, filters, sampleRate);
+  remaining =
+      extractFiltersFromRemainingFilter(expr, &evaluator, filters, sampleRate);
   ASSERT_FALSE(remaining);
   ASSERT_EQ(sampleRate, 0.5);
   ASSERT_EQ(filters.size(), 1);
@@ -639,8 +677,8 @@ TEST_F(HiveConnectorTest, prestoTableSampling) {
   expr = parseExpr("rand() < 0.5 and rand() < 0.5", rowType);
   filters.clear();
   sampleRate = 1;
-  remaining = extractFiltersFromRemainingFilter(
-      expr, &evaluator, false, filters, sampleRate);
+  remaining =
+      extractFiltersFromRemainingFilter(expr, &evaluator, filters, sampleRate);
   ASSERT_FALSE(remaining);
   ASSERT_EQ(sampleRate, 0.25);
   ASSERT_TRUE(filters.empty());
@@ -648,13 +686,73 @@ TEST_F(HiveConnectorTest, prestoTableSampling) {
   expr = parseExpr("c0 > 0 or rand() < 0.5", rowType);
   filters.clear();
   sampleRate = 1;
-  remaining = extractFiltersFromRemainingFilter(
-      expr, &evaluator, false, filters, sampleRate);
+  remaining =
+      extractFiltersFromRemainingFilter(expr, &evaluator, filters, sampleRate);
   ASSERT_TRUE(remaining);
   ASSERT_EQ(*remaining, *expr);
   ASSERT_EQ(sampleRate, 1);
   ASSERT_TRUE(filters.empty());
 }
+
+#define VELOX_ASSERT_FILTER(expected, actual)   \
+  ASSERT_TRUE(expected->testingEquals(*actual)) \
+      << expected->toString() << " vs " << actual->toString();
+
+TEST_F(HiveConnectorTest, disjuncts) {
+  auto queryCtx = core::QueryCtx::create();
+  exec::SimpleExpressionEvaluator evaluator(queryCtx.get(), pool_.get());
+  auto rowType = ROW({"c0", "c1", "c2"}, {BIGINT(), BIGINT(), DECIMAL(20, 0)});
+
+  {
+    auto expr =
+        parseExpr("(c0 > 0 and c0 < 10) or (c0 > 5 and c0 < 15)", rowType);
+
+    SubfieldFilters filters;
+    double sampleRate = 1;
+    auto remaining = extractFiltersFromRemainingFilter(
+        expr, &evaluator, filters, sampleRate);
+    ASSERT_TRUE(remaining == nullptr);
+    ASSERT_EQ(sampleRate, 1);
+    ASSERT_EQ(filters.size(), 1);
+    VELOX_ASSERT_FILTER(exec::between(1, 14), filters.begin()->second);
+  }
+
+  {
+    auto expr = parseExpr("(c0 between -10 and 12)", rowType);
+
+    SubfieldFilters filters;
+    double sampleRate = 1;
+    auto remaining = extractFiltersFromRemainingFilter(
+        expr, &evaluator, filters, sampleRate);
+    ASSERT_TRUE(remaining == nullptr);
+    ASSERT_EQ(sampleRate, 1);
+    ASSERT_EQ(filters.size(), 1);
+    ASSERT_EQ(filters.begin()->first, Subfield("c0"));
+    VELOX_ASSERT_FILTER(exec::between(-10, 12), filters.begin()->second);
+
+    expr = parseExpr("(c0 > 0 and c0 < 10) or (c0 > 5 and c0 < 15)", rowType);
+    remaining = extractFiltersFromRemainingFilter(
+        expr, &evaluator, filters, sampleRate);
+    ASSERT_TRUE(remaining == nullptr);
+    ASSERT_EQ(sampleRate, 1);
+    ASSERT_EQ(filters.size(), 1);
+    ASSERT_EQ(filters.begin()->first, Subfield("c0"));
+    VELOX_ASSERT_FILTER(exec::between(1, 12), filters.begin()->second);
+  }
+
+  {
+    auto expr = parseExpr("c0 not in (1, 3) or c0 in (1, 2)", rowType);
+    SubfieldFilters filters;
+    double sampleRate = 1;
+    auto remaining = extractFiltersFromRemainingFilter(
+        expr, &evaluator, filters, sampleRate);
+    ASSERT_EQ(remaining, expr);
+    ASSERT_EQ(sampleRate, 1);
+    ASSERT_TRUE(filters.empty());
+  }
+}
+
+#undef VELOX_ASSERT_FILTER
 
 } // namespace
 } // namespace facebook::velox::connector::hive

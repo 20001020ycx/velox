@@ -21,11 +21,11 @@
 #include <re2/re2.h>
 #include "velox/common/base/SpillConfig.h"
 #include "velox/common/base/SpillStats.h"
+#include "velox/common/base/TreeOfLosers.h"
 #include "velox/common/compression/Compression.h"
 #include "velox/common/file/File.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/exec/SpillFile.h"
-#include "velox/exec/TreeOfLosers.h"
 #include "velox/exec/UnorderedStreamReader.h"
 #include "velox/exec/VectorHasher.h"
 #include "velox/vector/ComplexVector.h"
@@ -33,6 +33,23 @@
 #include "velox/vector/VectorStream.h"
 
 namespace facebook::velox::exec {
+
+class SpillMergeStream;
+
+/// Testing gatherMerge without exposing the interface in the header. Used in
+/// test only. gatherMerge merges & sorts with the mergeTree and gatherCopy the
+/// results into target. 'target' is the result RowVector, and the copying
+/// starts from row 0 up to row target.size(). 'mergeTree' is the data source.
+/// 'totalNumRows' is the actual num of rows that is copied to target.
+/// 'bufferSources' and 'bufferSourceIndices' are buffering vectors that could
+/// be reused across calls.
+void testingGatherMerge(
+    RowVectorPtr& target,
+    TreeOfLosers<SpillMergeStream>& mergeTree,
+    int32_t& totalNumRows,
+    std::vector<const RowVector*>& bufferSources,
+    std::vector<vector_size_t>& bufferSourceIndices);
+
 class VectorHasher;
 
 /// A source of sorted spilled RowVectors coming either from a file or memory.
@@ -78,6 +95,15 @@ class SpillMergeStream : public MergeStream {
     VELOX_CHECK(!closed_);
     ensureDecodedValid(index);
     return decoded_[index];
+  }
+
+  /// Returns the estimated row size based on the vector received from the
+  /// merge source.
+  std::optional<int64_t> estimateRowSize() const {
+    if (rowVector_ == nullptr || rowVector_->size() == 0) {
+      return std::nullopt;
+    }
+    return rowVector_->estimateFlatSize() / rowVector_->size();
   }
 
  protected:
@@ -192,6 +218,28 @@ class FileSpillBatchStream : public BatchStream {
   std::unique_ptr<SpillReadFile> spillFile_;
 };
 
+/// A source of spilled RowVectors coming from a sequence of files.
+///
+/// NOTE: this object is not thread-safe.
+class ConcatFilesSpillBatchStream final : public BatchStream {
+ public:
+  static std::unique_ptr<BatchStream> create(
+      std::vector<std::unique_ptr<SpillReadFile>> spillFiles);
+
+  bool nextBatch(RowVectorPtr& batch) override;
+
+ private:
+  explicit ConcatFilesSpillBatchStream(
+      std::vector<std::unique_ptr<SpillReadFile>> spillFiles)
+      : spillFiles_(std::move(spillFiles)) {
+    VELOX_CHECK(!spillFiles_.empty());
+  }
+
+  std::vector<std::unique_ptr<SpillReadFile>> spillFiles_;
+  size_t fileIndex_{0};
+  bool atEnd_{false};
+};
+
 /// A SpillMergeStream that contains a sequence of sorted spill files, the
 /// sorted keys are ordered both within each file and across files.
 class ConcatFilesSpillMergeStream final : public SpillMergeStream {
@@ -244,9 +292,7 @@ class SpillPartitionId {
   /// Constructs a child spill level id, descending from provided 'parent'.
   SpillPartitionId(SpillPartitionId parent, uint32_t partitionNumber);
 
-  bool operator==(const SpillPartitionId& other) const;
-
-  bool operator!=(const SpillPartitionId& other) const;
+  bool operator==(const SpillPartitionId& other) const = default;
 
   /// Customize the compare operator for recursive spilling control. It
   /// ensures the order such that:
@@ -267,7 +313,7 @@ class SpillPartitionId {
   bool operator<(const SpillPartitionId& other) const;
 
   bool operator>(const SpillPartitionId& other) const {
-    return (*this != other) && !(*this < other);
+    return other < *this;
   }
 
   std::string toString() const;
@@ -459,20 +505,31 @@ class SpillPartition {
       memory::MemoryPool* pool,
       folly::Synchronized<common::SpillStats>* spillStats);
 
-  /// Invoked to create an ordered stream reader from this spill partition.
-  /// The created reader will take the ownership of the spill files.
-  /// 'bufferSize' specifies the read size from the storage. If the file
-  /// system supports async read mode, then reader allocates two buffers with
-  /// one buffer prefetch ahead. 'spillStats' is provided to collect the spill
-  /// stats when reading data from spilled files.
+  /// Create an ordered stream reader from this spill partition. If the
+  /// partition has more than spillConfig.numMaxMergeFiles files, the files will
+  /// be pre-merged recursively to make sure the final ordered reader reads no
+  /// more than numMaxMergeFiles files. This behavior is to avoid OOM problem
+  /// when opening and reading too many files at the same time. If
+  /// numMaxMergeFiles < 2, the merge way is unlimited.
   std::unique_ptr<TreeOfLosers<SpillMergeStream>> createOrderedReader(
-      uint64_t bufferSize,
+      const common::SpillConfig& spillConfig,
       memory::MemoryPool* pool,
       folly::Synchronized<common::SpillStats>* spillStats);
 
   std::string toString() const;
 
  private:
+  /// Invoked to create an ordered stream reader from this spill partition.
+  /// The created reader will take the ownership of the spill files.
+  /// 'bufferSize' specifies the read size from the storage. If the file
+  /// system supports async read mode, then reader allocates two buffers with
+  /// one buffer prefetch ahead. 'spillStats' is provided to collect the spill
+  /// stats when reading data from spilled files.
+  std::unique_ptr<TreeOfLosers<SpillMergeStream>> createOrderedReaderInternal(
+      uint64_t bufferSize,
+      memory::MemoryPool* pool,
+      folly::Synchronized<common::SpillStats>* spillStats);
+
   SpillPartitionId id_;
   SpillFiles files_;
   // Counts the total file size in bytes from this spilled partition.

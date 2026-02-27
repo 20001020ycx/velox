@@ -139,16 +139,17 @@ TEST_F(VectorMakerTest, flatVectorStringNullableTypes) {
       maker_.flatVectorNullable<const char*>({"hello", std::nullopt, "world"}));
 
   // std::string
-  validate(maker_.flatVectorNullable(std::vector<std::optional<std::string>>(
-      {"hello", std::nullopt, "world"})));
+  validate(maker_.flatVectorNullable(
+      std::vector<std::optional<std::string>>(
+          {"hello", std::nullopt, "world"})));
 
   // StringView
   validate(
       maker_.flatVectorNullable<StringView>({"hello", std::nullopt, "world"}));
 
   // std::string_view
-  validate(
-      maker_.flatVectorNullable(std::vector<std::optional<std::string_view>>(
+  validate(maker_.flatVectorNullable(
+      std::vector<std::optional<std::string_view>>(
           {"hello", std::nullopt, "world"})));
 }
 
@@ -691,16 +692,6 @@ TEST_F(VectorMakerTest, mapVectorUsingKeyValueVectorsUnevenKeysValues) {
   // Create map vector with uneven keys and values, should fail.
   auto values = maker_.flatVector<int64_t>({7, 8, 9});
   EXPECT_THROW(maker_.mapVector({0, 2, 4}, keys, values), VeloxRuntimeError);
-}
-
-TEST_F(VectorMakerTest, mapVectorUsingKeyValueVectorsNullsInvalidIndices) {
-  auto keys = maker_.flatVector<int32_t>({0, 1, 2, 3, 4, 5});
-  auto values = maker_.flatVector<int64_t>({6, 7, 8, 9, 10, 11});
-
-  // The middle map is NULL, but according to the offsets it has size 2, this
-  // should fail.
-  EXPECT_THROW(
-      maker_.mapVector({0, 2, 4}, keys, values, {1}), VeloxRuntimeError);
 }
 
 TEST_F(VectorMakerTest, mapVectorStringString) {

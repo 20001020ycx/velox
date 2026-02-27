@@ -113,20 +113,21 @@ void PeriodicStatsReporter::reportAllocatorStats() {
       kMetricMemoryAllocatorMappedBytes,
       (velox::memory::AllocationTraits::pageBytes(allocator_->numMapped())));
   RECORD_METRIC_VALUE(
+      kMetricMemoryAllocatorExternalMappedBytes,
+      (velox::memory::AllocationTraits::pageBytes(
+          allocator_->numExternalMapped())));
+  RECORD_METRIC_VALUE(
       kMetricMemoryAllocatorAllocatedBytes,
       (velox::memory::AllocationTraits::pageBytes(allocator_->numAllocated())));
   RECORD_METRIC_VALUE(
       kMetricMemoryAllocatorTotalUsedBytes, (allocator_->totalUsedBytes()));
+
   // TODO(jtan6): Remove condition after T150019700 is done
   if (auto* mmapAllocator =
           dynamic_cast<const velox::memory::MmapAllocator*>(allocator_)) {
     RECORD_METRIC_VALUE(
         kMetricMmapAllocatorDelegatedAllocatedBytes,
         (mmapAllocator->numMallocBytes()));
-    RECORD_METRIC_VALUE(
-        kMetricMmapAllocatorExternalMappedBytes,
-        velox::memory::AllocationTraits::pageBytes(
-            (mmapAllocator->numExternalMapped())));
   }
   // TODO(xiaoxmeng): add memory allocation size stats.
 }
@@ -138,7 +139,10 @@ void PeriodicStatsReporter::reportCacheStats() {
   const auto cacheStats = cache_->refreshStats();
 
   // Memory cache snapshot stats.
-  RECORD_METRIC_VALUE(kMetricMemoryCacheNumEntries, cacheStats.numEntries);
+  RECORD_METRIC_VALUE(
+      kMetricMemoryCacheNumTinyEntries, cacheStats.numTinyEntries);
+  RECORD_METRIC_VALUE(
+      kMetricMemoryCacheNumLargeEntries, cacheStats.numLargeEntries);
   RECORD_METRIC_VALUE(
       kMetricMemoryCacheNumEmptyEntries, cacheStats.numEmptyEntries);
   RECORD_METRIC_VALUE(kMetricMemoryCacheNumSharedEntries, cacheStats.numShared);
@@ -208,7 +212,12 @@ void PeriodicStatsReporter::reportCacheStats() {
     REPORT_IF_NOT_ZERO(
         kMetricSsdCacheWriteSsdErrors, deltaSsdStats.writeSsdErrors);
     REPORT_IF_NOT_ZERO(
+        kMetricSsdCacheWriteNoSpaceErrors, deltaSsdStats.writeSsdNoSpaceErrors);
+    REPORT_IF_NOT_ZERO(
         kMetricSsdCacheWriteSsdDropped, deltaSsdStats.writeSsdDropped);
+    REPORT_IF_NOT_ZERO(
+        kMetricSsdCacheWriteExceedEntryLimit,
+        deltaSsdStats.writeSsdExceedEntryLimit);
     REPORT_IF_NOT_ZERO(
         kMetricSsdCacheWriteCheckpointErrors,
         deltaSsdStats.writeCheckpointErrors);

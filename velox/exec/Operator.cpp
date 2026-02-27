@@ -68,9 +68,12 @@ OperatorCtx::createConnectorQueryCtx(
       driverCtx_->driverId,
       driverCtx_->queryConfig().sessionTimezone(),
       driverCtx_->queryConfig().adjustTimestampToTimezone(),
-      task->getCancellationToken());
+      task->getCancellationToken(),
+      task->queryCtx()->fsTokenProvider());
   connectorQueryCtx->setSelectiveNimbleReaderEnabled(
       driverCtx_->queryConfig().selectiveNimbleReaderEnabled());
+  connectorQueryCtx->setRowSizeTrackingMode(
+      driverCtx_->queryConfig().rowSizeTrackingMode());
   return connectorQueryCtx;
 }
 
@@ -81,18 +84,23 @@ Operator::Operator(
     std::string planNodeId,
     std::string operatorType,
     std::optional<common::SpillConfig> spillConfig)
-    : operatorCtx_(std::make_unique<OperatorCtx>(
-          driverCtx,
-          planNodeId,
-          operatorId,
-          operatorType)),
+    : operatorCtx_(
+          std::make_unique<OperatorCtx>(
+              driverCtx,
+              planNodeId,
+              operatorId,
+              operatorType)),
       outputType_(std::move(outputType)),
       spillConfig_(std::move(spillConfig)),
-      stats_(OperatorStats{
-          operatorId,
-          driverCtx->pipelineId,
-          std::move(planNodeId),
-          std::move(operatorType)}) {}
+      dryRun_(
+          operatorCtx_->driverCtx()->traceConfig().has_value() &&
+          operatorCtx_->driverCtx()->traceConfig()->dryRun),
+      stats_(
+          OperatorStats{
+              operatorId,
+              driverCtx->pipelineId,
+              std::move(planNodeId),
+              std::move(operatorType)}) {}
 
 void Operator::maybeSetReclaimer() {
   VELOX_CHECK_NULL(pool()->reclaimer());
@@ -111,7 +119,7 @@ void Operator::maybeSetTracer() {
   }
 
   const auto nodeId = planNodeId();
-  if (traceConfig->queryNodes.count(nodeId) == 0) {
+  if (traceConfig->queryNodeId.empty() || traceConfig->queryNodeId != nodeId) {
     return;
   }
 
@@ -141,7 +149,7 @@ void Operator::maybeSetTracer() {
       opTraceDirPath,
       operatorCtx_->driverCtx()->queryConfig().opTraceDirectoryCreateConfig());
 
-  if (operatorType() == "TableScan") {
+  if (dynamic_cast<SourceOperator*>(this) != nullptr) {
     setupSplitTracer(opTraceDirPath);
   } else {
     setupInputTracer(opTraceDirPath);
@@ -375,7 +383,7 @@ void Operator::recordBlockingTime(uint64_t start, BlockingReason reason) {
           std::chrono::high_resolution_clock::now().time_since_epoch())
           .count();
   const auto wallNanos = (now - start) * 1000;
-  const auto blockReason = blockingReasonToString(reason).substr(1);
+  const auto blockReason = BlockingReasonName::toName(reason).substr(1);
 
   auto lockedStats = stats_.wlock();
   lockedStats->blockedWallNanos += wallNanos;
@@ -387,7 +395,7 @@ void Operator::recordBlockingTime(uint64_t start, BlockingReason reason) {
 }
 
 void Operator::recordSpillStats() {
-  const auto lockedSpillStats = spillStats_.wlock();
+  const auto lockedSpillStats = spillStats_->wlock();
   auto lockedStats = stats_.wlock();
   lockedStats->spilledInputBytes += lockedSpillStats->spilledInputBytes;
   lockedStats->spilledBytes += lockedSpillStats->spilledBytes;
@@ -589,6 +597,14 @@ void OperatorStats::add(const OperatorStats& other) {
     }
   }
 
+  for (const auto& [name, exprStats] : other.expressionStats) {
+    if (UNLIKELY(expressionStats.count(name) == 0)) {
+      expressionStats.insert(std::make_pair(name, exprStats));
+    } else {
+      expressionStats.at(name).add(exprStats);
+    }
+  }
+
   numDrivers += other.numDrivers;
   spilledInputBytes += other.spilledInputBytes;
   spilledBytes += other.spilledBytes;
@@ -625,6 +641,7 @@ void OperatorStats::clear() {
   memoryStats.clear();
 
   runtimeStats.clear();
+  expressionStats.clear();
 
   numDrivers = 0;
   spilledInputBytes = 0;

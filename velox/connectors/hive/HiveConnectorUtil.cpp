@@ -21,6 +21,7 @@
 #include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/DirectBufferedInput.h"
 #include "velox/expression/Expr.h"
+#include "velox/expression/ExprConstants.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
 
 namespace facebook::velox::connector::hive {
@@ -73,14 +74,15 @@ std::unique_ptr<common::Filter> makeFloatingPointMapKeyFilter(
     if (lowerUnbounded && upperUnbounded) {
       continue;
     }
-    filters.push_back(std::make_unique<common::FloatingPointRange<T>>(
-        lower,
-        lowerUnbounded,
-        lowerExclusive,
-        upper,
-        upperUnbounded,
-        upperExclusive,
-        false));
+    filters.push_back(
+        std::make_unique<common::FloatingPointRange<T>>(
+            lower,
+            lowerUnbounded,
+            lowerExclusive,
+            upper,
+            upperUnbounded,
+            upperExclusive,
+            false));
   }
   if (filters.size() == 1) {
     return std::move(filters[0]);
@@ -110,8 +112,7 @@ void addSubfields(
       folly::F14FastMap<std::string, std::vector<SubfieldSpec>> required;
       for (auto& subfield : subfields) {
         auto* element = subfield.subfield->path()[level].get();
-        auto* nestedField =
-            dynamic_cast<const common::Subfield::NestedField*>(element);
+        auto* nestedField = element->as<common::Subfield::NestedField>();
         VELOX_CHECK(
             nestedField,
             "Unsupported for row subfields pruning: {}",
@@ -150,20 +151,18 @@ void addSubfields(
       std::vector<int64_t> longSubscripts;
       for (auto& subfield : subfields) {
         auto* element = subfield.subfield->path()[level].get();
-        if (dynamic_cast<const common::Subfield::AllSubscripts*>(element)) {
+        if (element->is(common::SubfieldKind::kAllSubscripts)) {
           return;
         }
         if (stringKey) {
-          auto* subscript =
-              dynamic_cast<const common::Subfield::StringSubscript*>(element);
+          auto* subscript = element->as<common::Subfield::StringSubscript>();
           VELOX_CHECK(
               subscript,
               "Unsupported for string map pruning: {}",
               element->toString());
           stringSubscripts.push_back(subscript->index());
         } else {
-          auto* subscript =
-              dynamic_cast<const common::Subfield::LongSubscript*>(element);
+          auto* subscript = element->as<common::Subfield::LongSubscript>();
           VELOX_CHECK(
               subscript,
               "Unsupported for long map pruning: {}",
@@ -242,8 +241,7 @@ inline uint8_t parseDelimiter(const std::string& delim) {
 
 inline bool isSynthesizedColumn(
     const std::string& name,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
-        infoColumns) {
+    const std::unordered_map<std::string, HiveColumnHandlePtr>& infoColumns) {
   return infoColumns.count(name) != 0;
 }
 
@@ -263,7 +261,7 @@ const std::string& getColumnName(const common::Subfield& subfield) {
   return field->name();
 }
 
-void checkColumnNameLowerCase(const std::shared_ptr<const Type>& type) {
+void checkColumnNameLowerCase(const TypePtr& type) {
   switch (type->kind()) {
     case TypeKind::ARRAY:
       checkColumnNameLowerCase(type->asArray().elementType());
@@ -289,8 +287,7 @@ void checkColumnNameLowerCase(const std::shared_ptr<const Type>& type) {
 
 void checkColumnNameLowerCase(
     const common::SubfieldFilters& filters,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
-        infoColumns) {
+    const std::unordered_map<std::string, HiveColumnHandlePtr>& infoColumns) {
   for (const auto& filterIt : filters) {
     const auto name = filterIt.first.toString();
     if (isSynthesizedColumn(name, infoColumns)) {
@@ -330,7 +327,11 @@ void processFieldSpec(
     if (type.isMap() && !spec.isConstant()) {
       auto* keys = spec.childByName(common::ScanSpec::kMapKeysFieldName);
       VELOX_CHECK_NOT_NULL(keys);
-      keys->addFilter(common::IsNotNull());
+      if (keys->filter()) {
+        VELOX_CHECK(!keys->filter()->testNull());
+      } else {
+        keys->setFilter(std::make_shared<common::IsNotNull>());
+      }
     }
   });
   if (dataColumns) {
@@ -351,10 +352,8 @@ std::shared_ptr<common::ScanSpec> makeScanSpec(
         outputSubfields,
     const common::SubfieldFilters& filters,
     const RowTypePtr& dataColumns,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
-        partitionKeys,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
-        infoColumns,
+    const std::unordered_map<std::string, HiveColumnHandlePtr>& partitionKeys,
+    const std::unordered_map<std::string, HiveColumnHandlePtr>& infoColumns,
     const SpecialColumnNames& specialColumns,
     bool disableStatsBasedFilterReorder,
     memory::MemoryPool* pool) {
@@ -443,7 +442,8 @@ std::shared_ptr<common::ScanSpec> makeScanSpec(
       continue;
     }
     auto fieldSpec = spec->getOrCreateChild(pair.first);
-    fieldSpec->addFilter(*pair.second);
+    VELOX_CHECK_NULL(spec->filter());
+    fieldSpec->setFilter(pair.second);
   }
 
   if (disableStatsBasedFilterReorder) {
@@ -614,6 +614,7 @@ void configureRowReaderOptions(
     const std::shared_ptr<const HiveConnectorSplit>& hiveSplit,
     const std::shared_ptr<const HiveConfig>& hiveConfig,
     const config::ConfigBase* sessionProperties,
+    folly::Executor* const ioExecutor,
     dwio::common::RowReaderOptions& rowReaderOptions) {
   auto skipRowsIt =
       tableParameters.find(dwio::common::TableParameter::kSkipHeaderLineCount);
@@ -621,12 +622,18 @@ void configureRowReaderOptions(
     rowReaderOptions.setSkipRows(folly::to<uint64_t>(skipRowsIt->second));
   }
   rowReaderOptions.setScanSpec(scanSpec);
+  rowReaderOptions.setIOExecutor(ioExecutor);
   rowReaderOptions.setMetadataFilter(std::move(metadataFilter));
   rowReaderOptions.setRequestedType(rowType);
   rowReaderOptions.range(hiveSplit->start, hiveSplit->length);
   if (hiveConfig && sessionProperties) {
-    rowReaderOptions.setTimestampPrecision(static_cast<TimestampPrecision>(
-        hiveConfig->readTimestampUnit(sessionProperties)));
+    rowReaderOptions.setTimestampPrecision(
+        static_cast<TimestampPrecision>(
+            hiveConfig->readTimestampUnit(sessionProperties)));
+    rowReaderOptions.setPreserveFlatMapsInMemory(
+        hiveConfig->preserveFlatMapsInMemory(sessionProperties));
+    rowReaderOptions.setParallelUnitLoadCount(
+        hiveConfig->parallelUnitLoadCount(sessionProperties));
   }
   rowReaderOptions.setSerdeParameters(hiveSplit->serdeParameters);
 }
@@ -637,7 +644,7 @@ bool applyPartitionFilter(
     const TypePtr& type,
     const std::string& partitionValue,
     bool isPartitionDateDaysSinceEpoch,
-    common::Filter* filter,
+    const common::Filter* filter,
     bool asLocalTime) {
   if (type->isDate()) {
     int32_t result = 0;
@@ -646,7 +653,7 @@ bool applyPartitionFilter(
     if (isPartitionDateDaysSinceEpoch) {
       result = folly::to<int32_t>(partitionValue);
     } else {
-      result = DATE()->toDays(static_cast<folly::StringPiece>(partitionValue));
+      result = DATE()->toDays(partitionValue);
     }
     return applyFilter(*filter, result);
   }
@@ -691,7 +698,7 @@ bool testFilters(
     const std::string& filePath,
     const std::unordered_map<std::string, std::optional<std::string>>&
         partitionKeys,
-    const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
+    const std::unordered_map<std::string, HiveColumnHandlePtr>&
         partitionKeysHandle,
     bool asLocalTime) {
   const auto totalRows = reader->numberOfRows();
@@ -753,32 +760,50 @@ std::unique_ptr<dwio::common::BufferedInput> createBufferedInput(
     const ConnectorQueryCtx* connectorQueryCtx,
     std::shared_ptr<io::IoStatistics> ioStats,
     std::shared_ptr<filesystems::File::IoStats> fsStats,
-    folly::Executor* executor) {
+    folly::Executor* executor,
+    const folly::F14FastMap<std::string, std::string>& fileReadOps) {
   if (connectorQueryCtx->cache()) {
     return std::make_unique<dwio::common::CachedBufferedInput>(
         fileHandle.file,
         dwio::common::MetricsLog::voidLog(),
-        fileHandle.uuid.id(),
+        fileHandle.uuid,
         connectorQueryCtx->cache(),
         Connector::getTracker(
             connectorQueryCtx->scanId(), readerOpts.loadQuantum()),
-        fileHandle.groupId.id(),
+        fileHandle.groupId,
         ioStats,
         std::move(fsStats),
         executor,
-        readerOpts);
+        readerOpts,
+        fileReadOps);
+  }
+  if (readerOpts.fileFormat() == dwio::common::FileFormat::NIMBLE) {
+    // Nimble streams (in case of single chunk) are compressed as whole and need
+    // to be fully fetched in order to do decompression, so there is no point to
+    // fetch them by quanta.  Just use BufferedInput to fetch streams as whole
+    // to reduce memory footprint.
+    return std::make_unique<dwio::common::BufferedInput>(
+        fileHandle.file,
+        readerOpts.memoryPool(),
+        dwio::common::MetricsLog::voidLog(),
+        ioStats.get(),
+        fsStats.get(),
+        dwio::common::BufferedInput::kMaxMergeDistance,
+        std::nullopt,
+        fileReadOps);
   }
   return std::make_unique<dwio::common::DirectBufferedInput>(
       fileHandle.file,
       dwio::common::MetricsLog::voidLog(),
-      fileHandle.uuid.id(),
+      fileHandle.uuid,
       Connector::getTracker(
           connectorQueryCtx->scanId(), readerOpts.loadQuantum()),
-      fileHandle.groupId.id(),
+      fileHandle.groupId,
       std::move(ioStats),
       std::move(fsStats),
       executor,
-      readerOpts);
+      readerOpts,
+      fileReadOps);
 }
 
 namespace {
@@ -848,8 +873,6 @@ double getPrestoSampleRate(
   return std::max(0.0, std::min(1.0, rate->value().value<double>()));
 }
 
-} // namespace
-
 core::TypedExprPtr extractFiltersFromRemainingFilter(
     const core::TypedExprPtr& expr,
     core::ExpressionEvaluator* evaluator,
@@ -862,10 +885,10 @@ core::TypedExprPtr extractFiltersFromRemainingFilter(
   }
   common::Filter* oldFilter = nullptr;
   try {
-    common::Subfield subfield;
-    if (auto filter = exec::ExprToSubfieldFilterParser::getInstance()
-                          ->leafCallToSubfieldFilter(
-                              *call, subfield, evaluator, negated)) {
+    if (auto subfieldAndFilter =
+            exec::ExprToSubfieldFilterParser::getInstance()
+                ->leafCallToSubfieldFilter(*call, evaluator, negated)) {
+      auto& [subfield, filter] = subfieldAndFilter.value();
       if (auto it = filters.find(subfield); it != filters.end()) {
         oldFilter = it->second.get();
         filter = filter->mergeWith(oldFilter);
@@ -887,20 +910,73 @@ core::TypedExprPtr extractFiltersFromRemainingFilter(
     return inner ? replaceInputs(call, {inner}) : nullptr;
   }
 
-  if ((call->name() == "and" && !negated) ||
-      (call->name() == "or" && negated)) {
-    auto lhs = extractFiltersFromRemainingFilter(
-        call->inputs()[0], evaluator, negated, filters, sampleRate);
-    auto rhs = extractFiltersFromRemainingFilter(
-        call->inputs()[1], evaluator, negated, filters, sampleRate);
-    if (!lhs) {
-      return rhs;
+  if ((call->name() == expression::kAnd && !negated) ||
+      (call->name() == expression::kOr && negated)) {
+    std::vector<core::TypedExprPtr> args;
+    args.reserve(call->inputs().size());
+    for (const auto& input : call->inputs()) {
+      if (auto arg = extractFiltersFromRemainingFilter(
+              input, evaluator, negated, filters, sampleRate)) {
+        args.push_back(std::move(arg));
+      }
+      // If extractFiltersFromRemainingFilter returns nullptr, it means
+      // everything in input is converted to filters.
     }
-    if (!rhs) {
-      return lhs;
+    if (args.empty()) {
+      return nullptr;
     }
-    return replaceInputs(call, {lhs, rhs});
+    if (args.size() == 1) {
+      return std::move(args[0]);
+    }
+    return replaceInputs(call, std::move(args));
   }
+
+  if ((call->name() == expression::kAnd && negated) ||
+      (call->name() == expression::kOr && !negated)) {
+    std::vector<std::unique_ptr<common::Filter>> disjuncts;
+    common::Subfield subfield;
+
+    for (const auto& input : call->inputs()) {
+      common::SubfieldFilters tmpFilters;
+      double tmpSampleRate = 1;
+      auto tmpRemaining = extractFiltersFromRemainingFilter(
+          input, evaluator, negated, tmpFilters, tmpSampleRate);
+
+      if (tmpRemaining != nullptr || tmpSampleRate != 1 ||
+          tmpFilters.size() != 1) {
+        disjuncts.clear();
+        break;
+      }
+
+      if (disjuncts.empty()) {
+        subfield = tmpFilters.begin()->first.clone();
+      } else if (!(subfield == tmpFilters.begin()->first)) {
+        disjuncts.clear();
+        break;
+      }
+
+      disjuncts.push_back(tmpFilters.begin()->second->clone());
+    }
+
+    if (!disjuncts.empty()) {
+      auto filter =
+          exec::ExprToSubfieldFilterParser::makeOrFilter(std::move(disjuncts));
+
+      if (filter == nullptr) {
+        return expr;
+      }
+
+      auto it = filters.find(subfield);
+      if (it != filters.end()) {
+        filter = filter->mergeWith(it->second.get());
+      }
+
+      filters.insert_or_assign(std::move(subfield), std::move(filter));
+
+      return nullptr;
+    }
+  }
+
   if (!negated) {
     double rate = getPrestoSampleRate(expr, call, evaluator);
     if (rate != -1) {
@@ -908,6 +984,18 @@ core::TypedExprPtr extractFiltersFromRemainingFilter(
       return nullptr;
     }
   }
+
   return expr;
 }
+} // namespace
+
+core::TypedExprPtr extractFiltersFromRemainingFilter(
+    const core::TypedExprPtr& expr,
+    core::ExpressionEvaluator* evaluator,
+    common::SubfieldFilters& filters,
+    double& sampleRate) {
+  return extractFiltersFromRemainingFilter(
+      expr, evaluator, /*negated=*/false, filters, sampleRate);
+}
+
 } // namespace facebook::velox::connector::hive

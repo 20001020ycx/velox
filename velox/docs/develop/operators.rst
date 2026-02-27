@@ -547,6 +547,8 @@ and emitting results.
      - Join type: inner, left, right, full, left semi filter, left semi project, right semi filter, right semi project, anti. You can read about different join types in this `blog post <https://dataschool.com/how-to-teach-people-sql/sql-join-types-explained-visually/>`_.
    * - nullAware
      - Applies to anti and semi project joins only. Indicates whether the join semantic is IN (nullAware = true) or EXISTS (nullAware = false).
+   * - useHashTableCache
+     - Optional. Used only by Presto-on-Spark. When true, enables caching of the hash table built for broadcast joins so that subsequent tasks can reuse it.
    * - leftKeys
      - Columns from the left hand side input that are part of the equality condition. At least one must be specified.
    * - rightKeys
@@ -652,8 +654,12 @@ The unnest operation expands arrays and maps into separate columns. Arrays are
 expanded into a single column, and maps are expanded into two columns
 (key, value). Can be used to expand multiple columns. In this case produces as
 many rows as the highest cardinality array or map (the other columns are padded
-with nulls). Optionally can produce an ordinality column that specifies the row
-number starting with 1.
+with nulls). Optionally, it can include an ordinality column to indicate the row
+number starting from 1, and an emptyUnnestValue column to indicate whether an
+output row has empty unnest value or not. If the ordinality column is specified
+along with the emptyUnnestValue column, the ordinality for the output row with
+empty unnest values is set to zero. If the emptyUnnestValue column is not specified,
+output rows with empty unnest values are not produced.
 
 .. list-table::
    :widths: 10 30
@@ -670,6 +676,8 @@ number starting with 1.
      - Names to use for expanded columns. One name per array column. Two names per map column.
    * - ordinalityName
      - Optional name for the ordinality column.
+   * - emptyUnnestValueName
+     - Optional name for the emptyUnnestValue column.
 
 .. _TableWriteNode:
 
@@ -941,7 +949,7 @@ results available before seeing all input.
 TopNRowNumberNode
 ~~~~~~~~~~~~~~~~~
 
-An optimized version of a WindowNode with a single row_number function and a
+An optimized version of a WindowNode with a single row_number, rank or dense_rank function and a
 limit over sorted partitions.
 
 Partitions the input using specified partitioning keys and maintains up to
@@ -949,11 +957,11 @@ a 'limit' number of top rows for each partition. After receiving all input,
 assigns row numbers within each partition starting from 1.
 
 This operator accumulates state: a hash table mapping partition keys to a list
-of top 'limit' rows within that partition.  Returning the row numbers as
+of top 'limit' rows within that partition.  Returning the row number or rank as
 a column in the output is optional. This operator supports spilling as well.
 
 This operator is logically equivalent to a WindowNode followed by
-FilterNode(row_number <= limit), but it uses less memory and CPU.
+FilterNode(rank/row_number <= limit), but it uses less memory and CPU.
 
 .. list-table::
   :widths: 10 30

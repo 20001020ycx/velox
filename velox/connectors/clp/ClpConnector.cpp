@@ -26,10 +26,8 @@ ClpConnector::ClpConnector(
 
 std::unique_ptr<DataSource> ClpConnector::createDataSource(
     const RowTypePtr& outputType,
-    const std::shared_ptr<ConnectorTableHandle>& tableHandle,
-    const std::unordered_map<
-        std::string,
-        std::shared_ptr<connector::ColumnHandle>>& columnHandles,
+    const ConnectorTableHandlePtr& tableHandle,
+    const connector::ColumnHandleMap& columnHandles,
     ConnectorQueryCtx* connectorQueryCtx) {
   return std::make_unique<ClpDataSource>(
       outputType,
@@ -41,7 +39,7 @@ std::unique_ptr<DataSource> ClpConnector::createDataSource(
 
 std::unique_ptr<DataSink> ClpConnector::createDataSink(
     RowTypePtr inputType,
-    std::shared_ptr<ConnectorInsertTableHandle> connectorInsertTableHandle,
+    ConnectorInsertTableHandlePtr connectorInsertTableHandle,
     ConnectorQueryCtx* connectorQueryCtx,
     CommitStrategy commitStrategy) {
   VELOX_NYI("createDataSink for ClpConnector is not implemented!");

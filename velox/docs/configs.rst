@@ -43,6 +43,16 @@ Generic Configuration
      - integer
      - 80
      - Abandons partial TopNRowNumber if number of output rows equals or exceeds this percentage of the number of input rows.
+   * - abandon_dedup_hashmap_min_rows
+     - integer
+     - 100,000
+     - Number of input rows to receive before starting to check whether to abandon building a HashTable without
+       duplicates in HashBuild for left semi/anti join.
+   * - abandon_dedup_hashmap_min_pct
+     - integer
+     - 0
+     - Abandons building a HashTable without duplicates in HashBuild for left semi/anti join if the percentage of
+       distinct keys in the HashTable exceeds this threshold. Zero means 'disable this optimization'.
    * - session_timezone
      - string
      -
@@ -60,6 +70,11 @@ Generic Configuration
      - true
      - Whether to track CPU usage for stages of individual operators. Can be expensive when processing small batches,
        e.g. < 10K rows.
+   * - operator_batch_size_stats_enabled
+     - bool
+     - true
+     - If true, the driver will collect the operator's input/output batch size through vector flat size estimation, otherwise not.
+       We might turn this off in use cases which have very wide column width and batch size estimation has non-trivial cpu cost.
    * - hash_adaptivity_enabled
      - bool
      - true
@@ -68,6 +83,11 @@ Generic Configuration
      - bool
      - true
      - If true, the conjunction expression can reorder inputs based on the time taken to calculate them.
+   * - parallel_join_build_rows_enabled
+     - bool
+     - false
+     - If true, the hash probe drivers can output build-side rows in parallel for full and right joins (only when spilling is not
+     - enabled by hash probe). If false, only the last prober is allowed to output build-side rows.
    * - max_local_exchange_buffer_size
      - integer
      - 32MB
@@ -101,6 +121,16 @@ Generic Configuration
        client. Enforced approximately, not strictly. A larger size can increase network throughput
        for larger clusters and thus decrease query processing time at the expense of reducing the
        amount of memory available for other usage.
+   * - skip_request_data_size_with_single_source_enabled
+     - bool
+     - false
+     -  If true, skip request data size if there is only single source.
+        This is used to optimize the Presto-on-Spark use case where each exchange client
+        has only one shuffle partition source.
+   * - local_merge_source_queue_size
+     - integer
+     - 2
+     - Maximum number of vectors buffered in each local merge source before blocking to wait for consumers.
    * - max_page_partitioning_buffer_size
      - integer
      - 32MB
@@ -117,6 +147,17 @@ Generic Configuration
      - integer
      - 1000
      - The minimum number of table rows that can trigger the parallel hash join table build.
+   * - hash_probe_dynamic_filter_pushdown_enabled
+     - bool
+     - true
+     - Whether hash probe can generate any dynamic filter (including Bloom filter) and push down to upstream operators.
+   * - hash_probe_bloom_filter_pushdown_max_size
+     - integer
+     - 0
+     - The maximum byte size of Bloom filter that can be generated from hash
+       probe.  When set to 0, no Bloom filter will be generated.  To achieve
+       optimal performance, this should not be too larger than the CPU cache
+       size on the host.
    * - debug.validate_output_from_operators
      - bool
      - false
@@ -139,6 +180,12 @@ Generic Configuration
      - 0
      - If it is not zero, specifies the time limit that a driver can continuously
        run on a thread before yield. If it is zero, then it no limit.
+   * - window_num_sub_partitions
+     - integer
+     - 1
+     - Window operator can be configured to sub-divide window partitions on each thread of execution into groups of
+       sub partitions for sequential processing. This setting specifies how many sub-partitions to create for each
+       thread. Use 1 to disable sub partitioning.
    * - prefixsort_normalized_key_max_bytes
      - integer
      - 128
@@ -167,8 +214,30 @@ Generic Configuration
      - 0
      - Specifies the max number of input batches to prefetch to do index lookup ahead. If it is zero,
        then process one input batch at a time.
+   * - index_lookup_join_split_output
+     - bool
+     - true
+     - If this is true, then the index join operator might split output for each input batch based
+       on the output batch size control. Otherwise, it tries to produce a single output for each input
+       batch.
+   * - unnest_split_output_batch
+     - bool
+     - true
+     - If this is true, then the unnest operator might split output for each input batch based on the
+       output batch size control. Otherwise, it produces a single output for each input batch.
+   * - max_num_splits_listened_to
+     - integer
+     - 0
+     - Specifies The max number of input splits to listen to by SplitListener per table scan node per
+       worker. It's up to the SplitListener implementation to respect this config.
+   * - operator_track_expression_stats
+     - bool
+     - false
+     - If this is true, then operators that evaluate expressions will track stats for expressions that
+       are not special forms and return them as part of their operator stats. Tracking these stats can
+       be expensive (especially if operator stats are retrieved frequently) and this allows the user to
+       explicitly enable it.
 
-.. _expression-evaluation-conf:
 
 Expression Evaluation Configuration
 -----------------------------------
@@ -189,6 +258,13 @@ Expression Evaluation Configuration
      - false
      - Whether to track CPU usage for individual expressions (supported by call and cast expressions). Can be expensive
        when processing small batches, e.g. < 10K rows.
+   * - expression.track_cpu_usage_for_functions
+     - string
+     - ""
+     - Comma-separated list of function names to selectively track CPU usage for. Only applicable when
+       ``expression.track_cpu_usage`` is set to false. Function names are case-insensitive and will be normalized
+       to lowercase. This allows fine-grained control over CPU tracking overhead when only specific functions need to
+       be monitored.
    * - legacy_cast
      - bool
      - false
@@ -226,6 +302,11 @@ Expression Evaluation Configuration
      - integer
      - 10000
      - Some lambda functions over arrays and maps are evaluated in batches of the underlying elements that comprise the arrays/maps. This is done to make the batch size managable as array vectors can have thousands of elements each and hit scaling limits as implementations typically expect BaseVectors to a couple of thousand entries. This lets up tune those batch sizes. Setting this to zero is setting unlimited batch size.
+   * - debug_bing_tile_children_max_zoom_shift
+     - integer
+     - 5
+     - The UDF `bing_tile_children` generates the children of a Bing tile based on a specified target zoom level. The number of children produced is determined by the difference between the target zoom level and the zoom level of the input tile. This configuration limits the number of children by capping the maximum zoom level difference, with a default value set to 5. This cap is necessary to prevent excessively large array outputs, which can exceed the size limits of the elements vector in the Velox array vector.
+
 
 Memory Management
 -----------------
@@ -254,6 +335,11 @@ Memory Management
        memory limit for partial aggregation is automatically doubled up to `max_extended_partial_aggregation_memory`.
        This adaptation is disabled by default, since the value of `max_extended_partial_aggregation_memory` equals the
        value of `max_partial_aggregation_memory`. Specify higher value for `max_extended_partial_aggregation_memory` to enable.
+   * - query_memory_reclaimer_priority
+     - integer
+     - 2147483647
+     - Priority of the query in the memory pool reclaimer. Lower value means higher priority. This is used in
+       global arbitration victim selection.
 
 Spilling
 --------
@@ -277,6 +363,10 @@ Spilling
      - boolean
      - true
      - When `spill_enabled` is true, determines whether HashBuild and HashProbe operators can spill to disk under memory pressure.
+   * - local_merge_spill_enabled
+     - boolean
+     - false
+     - When `spill_enabled` is true, determines whether LocalMerge operators can spill to disk to cap memory usage.
    * - mixed_grouped_mode_hash_join_spill_enabled
      - boolean
      - false
@@ -289,6 +379,12 @@ Spilling
      - boolean
      - true
      - When `spill_enabled` is true, determines whether Window operator can spill to disk under memory pressure.
+   * - window_spill_min_read_batch_rows
+     - integer
+     - 1000
+     - When processing spilled window data, read batches of whole partitions having at least that many rows. Set to 1 to
+       read one whole partition at a time. Each driver processing the Window operator will process that much data at
+       once.
    * - row_number_spill_enabled
      - boolean
      - true
@@ -382,6 +478,12 @@ Spilling
      - Specifies the compression algorithm type to compress the spilled data before write to disk to trade CPU for IO
        efficiency. The supported compression codecs are: zlib, snappy, lzo, zstd, lz4 and gzip.
        none means no compression.
+   * - spill_num_max_merge_files
+     - integer
+     - 0
+     - The max number of files to merge at a time when merging sorted files into a single ordered stream. 0 means unlimited.
+       This is used to reduce memory pressure by capping the number of open files when merging spilled sorted files to
+       avoid using too much memory and causing OOM. Note that this is only applicable for ordered spill.
    * - spill_prefixsort_enabled
      - bool
      - false
@@ -390,7 +492,7 @@ Spilling
    * - spiller_start_partition_bit
      - integer
      - 29
-     - The start partition bit which is used with `spiller_partition_bits` together to calculate the spilling partition number.
+     - The start partition bit which is used with `spiller_num_partition_bits` together to calculate the spilling partition number.
    * - spiller_num_partition_bits
      - integer
      - 3
@@ -419,6 +521,21 @@ Aggregation
      - integer
      - 80
      - Abandons partial aggregation if number of groups equals or exceeds this percentage of the number of input rows.
+   * - aggregation_compaction_bytes_threshold
+     - integer
+     - 0
+     - Memory threshold in bytes for triggering string compaction during global
+       aggregation. When total string storage exceeds this limit with high unused
+       memory ratio, compaction is triggered to reclaim dead strings. Disabled by
+       default (0). Currently only applies to approx_most_frequent aggregate with
+       StringView type during global aggregation.
+   * - aggregation_compaction_unused_memory_ratio
+     - double
+     - 0.25
+     - Ratio of unused (evicted) bytes to total bytes that triggers compaction.
+       The value is in the range of [0, 1). Currently only applies to approx_most_frequent
+       aggregate with StringView type during global aggregation. May be extended
+       to other aggregation types on-demand.
    * - streaming_aggregation_min_output_batch_rows
      - integer
      - 0
@@ -502,6 +619,31 @@ Table Writer
      - Minimum amount of data processed by all the logical table partitions to
        trigger skewed partition rebalancing by scale writer exchange.
 
+Connector Config
+----------------
+Connector config is initialized on velox runtime startup and is shared among queries as the default config across all connectors.
+Each query can override the config by setting corresponding query session properties such as in Prestissimo.
+
+.. list-table::
+   :widths: 20 20 10 10 70
+   :header-rows: 1
+
+   * - user
+     -
+     - string
+     - ""
+     - The user of the query. Used for storage logging.
+   * - source
+     -
+     - string
+     - ""
+     - The source of the query. Used for storage access and logging.
+   * - schema
+     -
+     - string
+     - ""
+     - The schema of the query. Used for storage logging.
+
 Hive Connector
 --------------
 Hive Connector config is initialized on velox runtime startup and is shared among queries as the default config.
@@ -521,6 +663,11 @@ Each query can override the config by setting corresponding query session proper
      - integer
      - 100
      - Maximum number of (bucketed) partitions per a single table writer instance.
+   * - hive.max-bucket-count
+     - hive.max_bucket_count
+     - integer
+     - 100000
+     - Maximum number of buckets that a table writer is allowed to write to.
    * - insert-existing-partitions-behavior
      - insert_existing_partitions_behavior
      - string
@@ -629,6 +776,11 @@ Each query can override the config by setting corresponding query session proper
      - bool
      - true
      - Reads timestamp partition value as local time if true. Otherwise, reads as UTC.
+   * - hive.preserve-flat-maps-in-memory
+     - hive.preserve_flat_maps_in_memory
+     - bool
+     - false
+     - Whether to preserve flat maps in memory as FlatMapVectors instead of converting them to MapVectors. This is only applied during data reading inside the DWRF and Nimble readers, not during downstream processing like expression evaluation etc.
 
 ``ORC File Format Configuration``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -720,6 +872,11 @@ Each query can override the config by setting corresponding query session proper
      - integer
      - 1024
      - Batch size used when writing into Parquet through Arrow bridge.
+   * - hive.parquet.writer.created-by
+     -
+     - string
+     - parquet-cpp-velox version 0.0.0
+     - Created-by value used when writing to Parquet.
 
 ``Amazon S3 Configuration``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -852,6 +1009,12 @@ These semantics are similar to the `Apache Hadoop-Aws module <https://hadoop.apa
      - string
      -
      - The GCS maximum time allowed to retry transient errors.
+   * - hive.gcs.auth.access-token-provider
+     - string
+     -
+     - A custom OAuth credential provider, if specified, will be used to create the client in favor of other
+       authentication mechanisms.
+       The provider must be registered using "registerGcsOAuthCredentialsProvider" before it can be used.
 
 ``Azure Blob Storage Configuration``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -865,12 +1028,15 @@ These semantics are similar to the `Apache Hadoop-Aws module <https://hadoop.apa
      - Description
    * - fs.azure.account.auth.type.<storage-account>.dfs.core.windows.net
      - string
-     - SharedKey
+     -
      - Specifies the authentication mechanism to use for Azure storage accounts.
        **Allowed values:** "SharedKey", "OAuth", "SAS".
        "SharedKey": Uses the storage account name and key for authentication.
        "OAuth": Utilizes OAuth tokens for secure authentication.
        "SAS": Employs Shared Access Signatures for granular access control.
+       To create Azure clients with the configured authentication type, the caller must
+       register the corresponding Azure client provider from the configuration by calling
+       `registerAzureClientProvider`.
    * - fs.azure.account.key.<storage-account>.dfs.core.windows.net
      - string
      -
@@ -899,6 +1065,12 @@ These semantics are similar to the `Apache Hadoop-Aws module <https://hadoop.apa
      - Specifies the OAuth 2.0 token endpoint URL for the Azure AD application.
        This endpoint is used to acquire access tokens for authenticating with Azure storage.
        The URL follows the format: `https://login.microsoftonline.com/<tenant-id>/oauth2/token`.
+   * - fs.azure.sas.token.renew.period.for.streams
+     - string
+     - 120
+     - Specifies the period in seconds to re-use SAS tokens until the expiry is within this number of seconds.
+       This configuration is used together with `registerSasTokenProvider` for dynamic SAS token renewal.
+       When a SAS token is close to expiry, it will be renewed by getting a new token from the provider.
 
 CLP Connector
 -----------------------------
@@ -973,6 +1145,14 @@ Spark-specific Configuration
      - Type
      - Default Value
      - Description
+   * - spark.ansi_enabled
+     - bool
+     - false
+     - If true, Spark function's behavior is ANSI-compliant, e.g. throws runtime exception instead
+       of returning null on invalid inputs. It affects only functions explicitly marked as "ANSI compliant".
+       Note: This feature is still under development to achieve full ANSI compliance. Users can
+       refer to the Spark function documentation to verify the current support status of a specific
+       function.
    * - spark.legacy_size_of_null
      - bool
      - true
@@ -1006,6 +1186,10 @@ Spark-specific Configuration
      - false
      - If true, Spark statistical aggregation functions including skewness, kurtosis, stddev, stddev_samp, variance,
        var_samp, covar_samp and corr will return NaN instead of NULL when dividing by zero during expression evaluation.
+   * - spark.json_ignore_null_fields
+     - bool
+     - true
+     - If true, ignore null fields when generating JSON string. If false, null fields are included with a null value.
 
 Tracing
 --------
@@ -1025,10 +1209,10 @@ Tracing
      - string
      -
      - The root directory to store the tracing data and metadata for a query.
-   * - query_trace_node_ids
+   * - query_trace_node_id
      - string
      -
-     - A comma-separated list of plan node ids whose input data will be trace. If it is empty, then we only trace the
+     - The plan node id whose input data will be trace. If it is empty, then we only trace the
        query metadata which includes the query plan and configs etc.
    * - query_trace_task_reg_exp
      - string
@@ -1038,3 +1222,60 @@ Tracing
      - integer
      - 0
      - The max trace bytes limit. Tracing is disabled if zero.
+   * - query_trace_dry_run
+     - boolean
+     - false
+     - If true, we only collect the input trace for a given operator but without the actual
+       execution. This is used for crash debugging.
+
+Cudf-specific Configuration (Experimental)
+------------------------------------------
+These configurations are available when `compiled with cuDF <https://github.com/facebookincubator/velox/blob/main/velox/experimental/cudf/README.md#getting-started-with-velox-cudf>`_.
+Note: These configurations are experimental and subject to change.
+
+.. list-table::
+   :widths: 30 10 10 70
+   :header-rows: 1
+
+   * - Property Name
+     - Type
+     - Default Value
+     - Description
+   * - cudf.enabled
+     - bool
+     - true
+     - If true, enable cuDF. By default, it is enabled if compiled with cuDF.
+   * - cudf.memory_resource
+     - string
+     - async
+     - The memory resource to use for cuDF. Possible values are (cuda, pool, async, arena, managed, managed_pool, prefetch_managed, prefetch_managed_pool).
+       The prefetch options enable automatic prefetching for better GPU memory performance: prefetch_managed uses CUDA unified memory with prefetching,
+       prefetch_managed_pool uses a pooled version of CUDA unified memory with prefetching.
+   * - cudf.memory_percent
+     - integer
+     - 50
+     - The initial percent of GPU memory to allocate for pool or arena memory resources.
+   * - cudf.function_name_prefix
+     - string
+     - ""
+     - The prefix to use for the function names in cuDF.
+   * - cudf.ast_expression_enabled
+     - bool
+     - true
+     - If true, enable using cuDF AST-based expression evaluation when supported.
+   * - cudf.ast_expression_priority
+     - integer
+     - 100
+     - Priority of cuDF AST expressions. Higher value wins when multiple cuDF execution options are available for the same Velox expression. Standalone cuDF functions have priority 50. If enabled, with a default priority of 100, AST will be chosen as replacement for cudf execution.
+   * - cudf.allow_cpu_fallback
+     - bool
+     - true
+     - If true, allow falling back to Velox CPU execution when an operation is not supported in cuDF execution. If false, an error will be thrown if an operation is not supported in cuDF execution.
+   * - cudf.debug_enabled
+     - bool
+     - false
+     - If true, enable debug printing.
+   * - cudf.log_fallback
+     - bool
+     - true
+     - If true, log a reason for falling back to Velox CPU execution, when an operation is not supported in cuDF execution.

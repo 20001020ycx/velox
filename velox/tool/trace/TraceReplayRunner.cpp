@@ -15,6 +15,7 @@
  */
 
 #include "velox/tool/trace/TraceReplayRunner.h"
+#include <folly/system/HardwareConcurrency.h>
 
 #include <gflags/gflags.h>
 
@@ -24,7 +25,6 @@
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/connectors/hive/HiveDataSink.h"
-#include "velox/connectors/hive/TableHandle.h"
 #include "velox/connectors/hive/storage_adapters/abfs/RegisterAbfsFileSystem.h"
 #include "velox/connectors/hive/storage_adapters/gcs/RegisterGcsFileSystem.h"
 #include "velox/connectors/hive/storage_adapters/hdfs/RegisterHdfsFileSystem.h"
@@ -44,10 +44,15 @@
 #include "velox/tool/trace/AggregationReplayer.h"
 #include "velox/tool/trace/FilterProjectReplayer.h"
 #include "velox/tool/trace/HashJoinReplayer.h"
+#include "velox/tool/trace/IndexLookupJoinReplayer.h"
+#include "velox/tool/trace/MergeJoinReplayer.h"
 #include "velox/tool/trace/OperatorReplayerBase.h"
+#include "velox/tool/trace/OrderByReplayer.h"
 #include "velox/tool/trace/PartitionedOutputReplayer.h"
 #include "velox/tool/trace/TableScanReplayer.h"
 #include "velox/tool/trace/TableWriterReplayer.h"
+#include "velox/tool/trace/TopNRowNumberReplayer.h"
+#include "velox/tool/trace/UnnestReplayer.h"
 #include "velox/type/Type.h"
 
 #ifdef VELOX_ENABLE_PARQUET
@@ -104,6 +109,10 @@ DEFINE_string(
     function_prefix,
     "",
     "Prefix for the scalar and aggregate functions.");
+DEFINE_string(
+    spill_directory,
+    "",
+    "Base directory for spilling. If not specified, a local temporary directory will be used.");
 
 namespace facebook::velox::tool::trace {
 namespace {
@@ -231,20 +240,21 @@ void printSummary(
 } // namespace
 
 TraceReplayRunner::TraceReplayRunner()
-    : cpuExecutor_(std::make_unique<folly::CPUThreadPoolExecutor>(
-          std::thread::hardware_concurrency() *
-              FLAGS_driver_cpu_executor_hw_multiplier,
-          std::make_shared<folly::NamedThreadFactory>(
-              "TraceReplayCpuConnector"))),
-      ioExecutor_(std::make_unique<folly::IOThreadPoolExecutor>(
-          std::thread::hardware_concurrency() *
-              FLAGS_hive_connector_executor_hw_multiplier,
-          std::make_shared<folly::NamedThreadFactory>(
-              "TraceReplayIoConnector"))) {}
+    : cpuExecutor_(
+          std::make_unique<folly::CPUThreadPoolExecutor>(
+              folly::hardware_concurrency() *
+                  FLAGS_driver_cpu_executor_hw_multiplier,
+              std::make_shared<folly::NamedThreadFactory>(
+                  "TraceReplayCpuConnector"))),
+      ioExecutor_(
+          std::make_unique<folly::IOThreadPoolExecutor>(
+              folly::hardware_concurrency() *
+                  FLAGS_hive_connector_executor_hw_multiplier,
+              std::make_shared<folly::NamedThreadFactory>(
+                  "TraceReplayIoConnector"))) {}
 
 void TraceReplayRunner::init() {
   VELOX_USER_CHECK(!FLAGS_root_dir.empty(), "--root_dir must be provided");
-  VELOX_USER_CHECK(!FLAGS_query_id.empty(), "--query_id must be provided");
   VELOX_USER_CHECK(!FLAGS_node_id.empty(), "--node_id must be provided");
 
   if (!memory::MemoryManager::testInstance()) {
@@ -270,6 +280,7 @@ void TraceReplayRunner::init() {
 #endif
 
   core::PlanNode::registerSerDe();
+  velox::exec::trace::registerDummySourceSerDe();
   core::ITypedExpr::registerSerDe();
   common::Filter::registerSerDe();
   Type::registerSerDe();
@@ -286,23 +297,12 @@ void TraceReplayRunner::init() {
   if (!isRegisteredNamedVectorSerde(VectorSerde::Kind::kUnsafeRow)) {
     serializer::spark::UnsafeRowVectorSerde::registerNamedVectorSerde();
   }
-  connector::hive::HiveTableHandle::registerSerDe();
-  connector::hive::LocationHandle::registerSerDe();
-  connector::hive::HiveColumnHandle::registerSerDe();
-  connector::hive::HiveInsertTableHandle::registerSerDe();
-  connector::hive::HiveInsertFileNameGenerator::registerSerDe();
-  connector::hive::HiveConnectorSplit::registerSerDe();
-  connector::hive::registerHivePartitionFunctionSerDe();
-  connector::hive::HiveBucketProperty::registerSerDe();
+
+  connector::hive::HiveConnector::registerSerDe();
 
   functions::prestosql::registerAllScalarFunctions(FLAGS_function_prefix);
   aggregate::prestosql::registerAllAggregateFunctions(FLAGS_function_prefix);
   parse::registerTypeResolver();
-
-  if (!facebook::velox::connector::hasConnectorFactory("hive")) {
-    connector::registerConnectorFactory(
-        std::make_shared<connector::hive::HiveConnectorFactory>());
-  }
 
   fs_ = filesystems::getFileSystem(FLAGS_root_dir, nullptr);
   const auto taskTraceDir = exec::trace::getTaskTraceDirectory(
@@ -340,6 +340,7 @@ TraceReplayRunner::createReplayer() const {
         FLAGS_task_id,
         FLAGS_node_id,
         traceNodeName,
+        FLAGS_spill_directory,
         FLAGS_driver_ids,
         queryCapacityBytes,
         cpuExecutor_.get());
@@ -357,14 +358,15 @@ TraceReplayRunner::createReplayer() const {
   } else if (traceNodeName == "TableScan") {
     const auto connectorId =
         taskTraceMetadataReader_->connectorId(FLAGS_node_id);
-    if (const auto& collectors = connector::getAllConnectors();
-        collectors.find(connectorId) == collectors.end()) {
-      const auto hiveConnector =
-          connector::getConnectorFactory("hive")->newConnector(
-              connectorId,
-              std::make_shared<config::ConfigBase>(
-                  std::unordered_map<std::string, std::string>()),
-              ioExecutor_.get());
+    VELOX_CHECK(connectorId.has_value());
+
+    if (!connector::hasConnector(connectorId.value())) {
+      connector::hive::HiveConnectorFactory factory;
+      const auto hiveConnector = factory.newConnector(
+          connectorId.value(),
+          std::make_shared<config::ConfigBase>(
+              std::unordered_map<std::string, std::string>()),
+          ioExecutor_.get());
       connector::registerConnector(hiveConnector);
     }
     replayer = std::make_unique<tool::trace::TableScanReplayer>(
@@ -393,6 +395,60 @@ TraceReplayRunner::createReplayer() const {
         FLAGS_task_id,
         FLAGS_node_id,
         traceNodeName,
+        FLAGS_spill_directory,
+        FLAGS_driver_ids,
+        queryCapacityBytes,
+        cpuExecutor_.get());
+  } else if (traceNodeName == "IndexLookupJoin") {
+    replayer = std::make_unique<tool::trace::IndexLookupJoinReplayer>(
+        FLAGS_root_dir,
+        FLAGS_query_id,
+        FLAGS_task_id,
+        FLAGS_node_id,
+        traceNodeName,
+        FLAGS_driver_ids,
+        queryCapacityBytes,
+        cpuExecutor_.get());
+  } else if (traceNodeName == "MergeJoin") {
+    replayer = std::make_unique<tool::trace::MergeJoinReplayer>(
+        FLAGS_root_dir,
+        FLAGS_query_id,
+        FLAGS_task_id,
+        FLAGS_node_id,
+        traceNodeName,
+        FLAGS_spill_directory,
+        FLAGS_driver_ids,
+        queryCapacityBytes,
+        cpuExecutor_.get());
+  } else if (traceNodeName == "Unnest") {
+    replayer = std::make_unique<tool::trace::UnnestReplayer>(
+        FLAGS_root_dir,
+        FLAGS_query_id,
+        FLAGS_task_id,
+        FLAGS_node_id,
+        traceNodeName,
+        FLAGS_driver_ids,
+        queryCapacityBytes,
+        cpuExecutor_.get());
+  } else if (traceNodeName == "OrderBy") {
+    replayer = std::make_unique<tool::trace::OrderByReplayer>(
+        FLAGS_root_dir,
+        FLAGS_query_id,
+        FLAGS_task_id,
+        FLAGS_node_id,
+        traceNodeName,
+        FLAGS_spill_directory,
+        FLAGS_driver_ids,
+        queryCapacityBytes,
+        cpuExecutor_.get());
+  } else if (traceNodeName == "TopNRowNumber") {
+    replayer = std::make_unique<tool::trace::TopNRowNumberReplayer>(
+        FLAGS_root_dir,
+        FLAGS_query_id,
+        FLAGS_task_id,
+        FLAGS_node_id,
+        traceNodeName,
+        FLAGS_spill_directory,
         FLAGS_driver_ids,
         queryCapacityBytes,
         cpuExecutor_.get());

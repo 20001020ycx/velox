@@ -16,6 +16,7 @@
 #include "velox/exec/fuzzer/WriterFuzzer.h"
 
 #include <boost/random/uniform_int_distribution.hpp>
+#include <fmt/ranges.h>
 
 #include <re2/re2.h>
 #include <algorithm>
@@ -149,8 +150,7 @@ class WriterFuzzer {
       const std::shared_ptr<TempDirectoryPath>& outputDirectoryPath);
 
   // Generates table column handles based on table column properties
-  std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>
-  getTableColumnHandles(
+  connector::ColumnHandleMap getTableColumnHandles(
       const std::vector<std::string>& names,
       const std::vector<TypePtr>& types,
       int32_t partitionOffset,
@@ -248,7 +248,7 @@ class WriterFuzzer {
   };
 
   // Supported partition key column types
-  // According to VectorHasher::typeKindSupportsValueIds and
+  // According to VectorHasher::typeSupportsValueIds and
   // https://github.com/prestodb/presto/blob/10143be627beb2c61aba5b3d36af473d2a8ef65e/presto-hive/src/main/java/com/facebook/presto/hive/HiveUtil.java#L593
   const std::vector<TypePtr> kPartitionKeyTypes_{
       BOOLEAN(),
@@ -256,7 +256,8 @@ class WriterFuzzer {
       SMALLINT(),
       INTEGER(),
       BIGINT(),
-      VARCHAR()};
+      VARCHAR(),
+      TIMESTAMP()};
 
   const std::shared_ptr<FaultyFileSystem> faultyFs_ =
       std::dynamic_pointer_cast<FaultyFileSystem>(
@@ -364,11 +365,12 @@ void WriterFuzzer::go() {
           sortColumnOffset -= offset;
           sortBy.reserve(sortColumns.size());
           for (const auto& sortByColumn : sortColumns) {
-            sortBy.push_back(std::make_shared<const HiveSortingColumn>(
-                sortByColumn,
-                kSortOrderTypes_.at(
-                    boost::random::uniform_int_distribution<uint32_t>(
-                        0, 1)(rng_))));
+            sortBy.push_back(
+                std::make_shared<const HiveSortingColumn>(
+                    sortByColumn,
+                    kSortOrderTypes_.at(
+                        boost::random::uniform_int_distribution<uint32_t>(
+                            0, 1)(rng_))));
           }
         }
       }
@@ -483,8 +485,9 @@ std::vector<RowVectorPtr> WriterFuzzer::generateInputData(
             partitionValues.at(j - partitionOffset), size));
       }
     }
-    input.push_back(std::make_shared<RowVector>(
-        pool_.get(), inputType, nullptr, size, std::move(children)));
+    input.push_back(
+        std::make_shared<RowVector>(
+            pool_.get(), inputType, nullptr, size, std::move(children)));
   }
 
   return input;
@@ -635,14 +638,12 @@ void WriterFuzzer::verifyWriter(
   LOG(INFO) << "Verified results against reference DB";
 }
 
-std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>
-WriterFuzzer::getTableColumnHandles(
+connector::ColumnHandleMap WriterFuzzer::getTableColumnHandles(
     const std::vector<std::string>& names,
     const std::vector<TypePtr>& types,
     const int32_t partitionOffset,
     const int32_t bucketCount) {
-  std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>
-      columnHandle;
+  connector::ColumnHandleMap columnHandle;
   for (int i = 0; i < names.size(); ++i) {
     HiveColumnHandle::ColumnType columnType;
     if (i < partitionOffset) {
@@ -706,8 +707,9 @@ RowVectorPtr WriterFuzzer::veloxToPrestoResult(const RowVectorPtr& result) {
 std::string WriterFuzzer::getReferenceOutputDirectoryPath(int32_t layers) {
   auto filePath =
       referenceQueryRunner_->execute("SELECT \"$path\" FROM tmp_write");
+  auto stringView = extractSingleValue<StringView>(filePath);
   auto tableDirectoryPath =
-      fs::path(extractSingleValue<StringView>(filePath)).parent_path();
+      fs::path(std::string_view(stringView)).parent_path();
   while (layers-- > 0) {
     tableDirectoryPath = tableDirectoryPath.parent_path();
   }
@@ -745,11 +747,30 @@ void WriterFuzzer::comparePartitionAndBucket(
     // If not bucketed, only verify if their partition names match
     VELOX_CHECK(
         partitionNames == referencePartitionNames,
-        "Velox and reference DB output partitions don't match");
-  } else {
-    VELOX_CHECK(
-        partitionNameAndFileCount == referencedPartitionNameAndFileCount,
-        "Velox and reference DB output partition and bucket don't match");
+        "Velox and reference DB output partitions don't match. Velox: [{}], Presto: [{}]",
+        fmt::join(partitionNames, ", "),
+        fmt::join(referencePartitionNames, ", "));
+  } else if (partitionNameAndFileCount != referencedPartitionNameAndFileCount) {
+    std::vector<std::string> partitionNameAndFileCountStrs;
+    std::vector<std::string> referencedPartitionNameAndFileCountStrs;
+
+    partitionNameAndFileCountStrs.reserve(partitionNameAndFileCount.size());
+    referencedPartitionNameAndFileCountStrs.reserve(
+        referencedPartitionNameAndFileCount.size());
+
+    for (const auto& p : partitionNameAndFileCount) {
+      partitionNameAndFileCountStrs.push_back(
+          fmt::format("'{}': {}", p.first, p.second));
+    }
+    for (const auto& p : referencedPartitionNameAndFileCount) {
+      referencedPartitionNameAndFileCountStrs.push_back(
+          fmt::format("'{}': {}", p.first, p.second));
+    }
+
+    VELOX_FAIL(
+        "Velox and reference DB output partition and bucket don't match. Velox: {{{}}}, Presto: {{{}}}",
+        fmt::join(partitionNameAndFileCountStrs, ", "),
+        fmt::join(referencedPartitionNameAndFileCountStrs, ", "));
   }
 }
 

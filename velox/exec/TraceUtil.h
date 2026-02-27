@@ -27,6 +27,45 @@
 
 namespace facebook::velox::exec::trace {
 
+static const std::vector<core::PlanNodePtr> kEmptySources;
+
+class DummySourceNode final : public core::PlanNode {
+ public:
+  explicit DummySourceNode(RowTypePtr outputType)
+      : PlanNode(""), outputType_(std::move(outputType)) {}
+
+  const RowTypePtr& outputType() const override {
+    return outputType_;
+  }
+
+  const std::vector<core::PlanNodePtr>& sources() const override {
+    return kEmptySources;
+  }
+
+  std::string_view name() const override {
+    return "DummySource";
+  }
+
+  folly::dynamic serialize() const override {
+    folly::dynamic obj = folly::dynamic::object;
+    obj["name"] = "DummySource";
+    obj["outputType"] = outputType_->serialize();
+    return obj;
+  }
+
+  static core::PlanNodePtr create(const folly::dynamic& obj, void* context) {
+    return std::make_shared<DummySourceNode>(
+        ISerializable::deserialize<RowType>(obj["outputType"]));
+  }
+
+ private:
+  void addDetails(std::stringstream& stream) const override {
+    // Nothing to add.
+  }
+
+  const RowTypePtr outputType_;
+};
+
 /// Creates a directory to store the query trace metdata and data.
 void createTraceDirectory(
     const std::string& traceDir,
@@ -135,4 +174,19 @@ folly::dynamic getTaskMetadata(
 
 /// Checks whether the operator can be traced.
 bool canTrace(const std::string& operatorType);
+
+/// Gets the specified the trace node from 'plan'. In the returned trace node,
+/// we replace its source nodes with DummySourceNode for replay.
+core::PlanNodePtr getTraceNode(
+    const core::PlanNodePtr& plan,
+    core::PlanNodeId nodeId);
+
+using TraceNodeFactory = std::function<
+    core::PlanNodePtr(const core::PlanNode*, const core::PlanNodeId&)>;
+
+void registerTraceNodeFactory(
+    const std::string& operatorType,
+    TraceNodeFactory&& factory);
+
+void registerDummySourceSerDe();
 } // namespace facebook::velox::exec::trace

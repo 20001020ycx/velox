@@ -21,6 +21,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "velox/common/base/VeloxException.h"
 #include "velox/common/base/tests/GTestUtils.h"
@@ -325,6 +326,32 @@ void testRe2Search(F&& regexSearch) {
   EXPECT_EQ(std::nullopt, regexSearch("", std::nullopt));
 }
 
+TEST_F(Re2FunctionsTest, regexSearchUnknown) {
+  // varchar, unknown
+  EXPECT_EQ(
+      std::nullopt,
+      evaluateOnce<bool>(
+          "re2_search(c0, c1)",
+          std::optional<std::string>("hello123"),
+          std::vector<std::optional<UnknownValue>>{std::nullopt}[0]));
+
+  // unknown, varchar
+  EXPECT_EQ(
+      std::nullopt,
+      evaluateOnce<bool>(
+          "re2_search(c0, c1)",
+          std::optional<std::string>(std::nullopt),
+          std::optional<std::string>("hello123")));
+
+  // unknown, unknown
+  EXPECT_EQ(
+      std::nullopt,
+      evaluateOnce<bool>(
+          "re2_search(c0, c1)",
+          std::vector<std::optional<UnknownValue>>{std::nullopt}[0],
+          std::vector<std::optional<UnknownValue>>{std::nullopt}[0]));
+}
+
 TEST_F(Re2FunctionsTest, regexSearchConstantPattern) {
   testRe2Search([&](std::optional<std::string> str,
                     std::optional<std::string> pattern) {
@@ -501,11 +528,12 @@ TEST_F(Re2FunctionsTest, likeDeterminePatternKind) {
         PatternMetadata patternMetadata =
             determinePatternKind(pattern, std::nullopt);
 
-        SCOPED_TRACE(fmt::format(
-            "pattern: '{}', length: {}, actualLength: {}",
-            pattern,
-            length,
-            patternMetadata.length()));
+        SCOPED_TRACE(
+            fmt::format(
+                "pattern: '{}', length: {}, actualLength: {}",
+                pattern,
+                length,
+                patternMetadata.length()));
         EXPECT_EQ(patternMetadata.patternKind(), patternKind);
         EXPECT_EQ(patternMetadata.length(), length);
       };
@@ -513,8 +541,9 @@ TEST_F(Re2FunctionsTest, likeDeterminePatternKind) {
   auto testPatternString = [&](std::string_view pattern,
                                PatternKind patternKind,
                                std::string_view fixedPattern) {
-    SCOPED_TRACE(fmt::format(
-        "pattern: '{}', fixedPattern: '{}'", pattern, fixedPattern));
+    SCOPED_TRACE(
+        fmt::format(
+            "pattern: '{}', fixedPattern: '{}'", pattern, fixedPattern));
 
     PatternMetadata patternMetadata =
         determinePatternKind(pattern, std::nullopt);
@@ -1535,35 +1564,6 @@ TEST_F(Re2FunctionsTest, limit) {
   ASSERT_NO_THROW(evaluate("regexp_like(c0, c2)", data));
 }
 
-TEST_F(Re2FunctionsTest, split) {
-  auto input = makeRowVector({
-      makeFlatVector<std::string>({
-          "1a 2b 14m",
-          "1a 2b 14",
-          "",
-          "a123b",
-      }),
-  });
-  auto result = evaluate("regexp_split(c0, '\\s*[a-z]+\\s*')", input);
-
-  auto expected = makeArrayVector<std::string>({
-      {"1", "2", "14", ""},
-      {"1", "2", "14"},
-      {""},
-      {"", "123", ""},
-  });
-  assertEqualVectors(expected, result);
-
-  result = evaluate("regexp_split(c0, '\\s*\\d+\\s*')", input);
-  expected = makeArrayVector<std::string>({
-      {"", "a", "b", "m"},
-      {"", "a", "b", ""},
-      {""},
-      {"a", "b"},
-  });
-  assertEqualVectors(expected, result);
-}
-
 TEST_F(Re2FunctionsTest, parseSubstrings) {
   auto test = [&](const std::string& input,
                   const std::vector<std::string>& expected) {
@@ -1586,5 +1586,6 @@ TEST_F(Re2FunctionsTest, parseSubstrings) {
   test("%aa%bb%%", {"aa", "bb"});
   test("%aa%bb%%%cc%", {"aa", "bb", "cc"});
 }
+
 } // namespace
 } // namespace facebook::velox::functions

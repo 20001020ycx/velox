@@ -27,6 +27,8 @@
 
 namespace facebook::velox::dwio::common {
 
+using ScanSpec = velox::common::ScanSpec;
+
 /// Generalized representation of a set of distinct values for dictionary
 /// encodings.
 struct DictionaryValues {
@@ -161,12 +163,11 @@ class SelectiveColumnReader {
   // from a downstream operator.
   virtual void resetFilterCaches();
 
-  // Seeks to offset and reads the rows in 'rows' and applies
-  // filters and value processing as given by 'scanSpec supplied at
-  // construction. 'offset' is relative to start of stripe. 'rows' are
-  // relative to 'offset', so that row 0 is the 'offset'th row from
-  // start of stripe. 'rows' is expected to stay constant
-  // between this and the next call to read.
+  // Seeks to offset and reads the rows in 'rows' and applies filters and value
+  // processing as given by 'scanSpec supplied at construction. 'offset' is
+  // relative to start of stripe. 'rows' are relative to 'offset', so that row 0
+  // is the 'offset'th row from start of stripe. 'rows' is expected to stay
+  // constant between this and the next call to read.
   virtual void
   read(int64_t offset, const RowSet& rows, const uint64_t* incomingNulls) = 0;
 
@@ -335,7 +336,7 @@ class SelectiveColumnReader {
   template <typename T>
   inline void addValue(T value) {
     static_assert(
-        std::is_pod_v<T>,
+        std::is_standard_layout_v<T>,
         "General case of addValue is only for primitive types");
     VELOX_DCHECK_NOT_NULL(rawValues_);
     VELOX_DCHECK_LE((numValues_ + 1) * sizeof(T), values_->capacity());
@@ -483,7 +484,7 @@ class SelectiveColumnReader {
     return false;
   }
 
-  StringView copyStringValueIfNeed(folly::StringPiece value) {
+  StringView copyStringValueIfNeed(std::string_view value) {
     if (value.size() <= StringView::kInlineSize) {
       return StringView(value);
     }
@@ -493,6 +494,10 @@ class SelectiveColumnReader {
 
   virtual void setCurrentRowNumber(int64_t /*value*/) {
     VELOX_UNREACHABLE("Only struct reader supports this method");
+  }
+
+  memory::MemoryPool* memoryPool() const {
+    return memoryPool_;
   }
 
  protected:
@@ -578,11 +583,11 @@ class SelectiveColumnReader {
   // Checks consistency of nulls-related state.
   const uint64_t* shouldMoveNulls(const RowSet& rows);
 
-  void addStringValue(folly::StringPiece value);
+  void addStringValue(std::string_view value);
 
   // Copies 'value' to buffers owned by 'this' and returns the start of the
   // copy.
-  char* copyStringValue(folly::StringPiece value);
+  char* copyStringValue(std::string_view value);
 
   virtual bool hasDeletion() const {
     return false;
@@ -729,7 +734,7 @@ class SelectiveColumnReader {
 };
 
 template <>
-inline void SelectiveColumnReader::addValue(const folly::StringPiece value) {
+inline void SelectiveColumnReader::addValue(const std::string_view value) {
   const uint64_t size = value.size();
   if (size <= StringView::kInlineSize) {
     reinterpret_cast<StringView*>(rawValues_)[numValues_++] =
@@ -763,7 +768,7 @@ struct NoHook final : public ValueHook {
 
   void addValue(vector_size_t /*row*/, double /*value*/) final {}
 
-  void addValue(vector_size_t /*row*/, folly::StringPiece /*value*/) final {}
+  void addValue(vector_size_t /*row*/, std::string_view /*value*/) final {}
 };
 
 } // namespace facebook::velox::dwio::common

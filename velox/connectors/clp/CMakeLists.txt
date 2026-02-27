@@ -19,11 +19,10 @@ velox_add_library(
   ClpConfig.cpp
   ClpConnector.cpp
   ClpDataSource.cpp
-  ClpTableHandle.cpp)
+  ClpTableHandle.cpp
+)
 
-velox_link_libraries(velox_clp_connector
-                     PRIVATE clp-s-search simdjson::simdjson velox_connector)
-target_compile_features(velox_clp_connector PRIVATE cxx_std_20)
+velox_link_libraries(velox_clp_connector PRIVATE clp-s-search simdjson::simdjson velox_connector)
 
 if(${VELOX_BUILD_TESTING})
   add_subdirectory(tests)

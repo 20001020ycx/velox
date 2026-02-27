@@ -22,7 +22,7 @@ target_link_libraries(
   velox_exec_test_lib
   velox_vector_test_lib
   GTest::gtest
-  GTest::gtest_main)
+  GTest::gtest_main
+)
 
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/examples
-     DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/examples DESTINATION ${CMAKE_CURRENT_BINARY_DIR})

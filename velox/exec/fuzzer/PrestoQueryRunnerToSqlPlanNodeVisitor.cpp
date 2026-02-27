@@ -203,7 +203,7 @@ void PrestoQueryRunnerToSqlPlanNodeVisitor::visit(
       static_cast<PrestoSqlPlanNodeVisitorContext&>(ctx);
 
   auto insertTableHandle =
-      std::dynamic_pointer_cast<connector::hive::HiveInsertTableHandle>(
+      std::dynamic_pointer_cast<const connector::hive::HiveInsertTableHandle>(
           node.insertTableHandle()->connectorInsertTableHandle());
 
   // Returns a CTAS sql with specified table properties from TableWriteNode,
@@ -291,7 +291,8 @@ void PrestoQueryRunnerToSqlPlanNodeVisitor::visit(
     sql << inputType->nameOf(i);
   }
 
-  sql << ", row_number() OVER (";
+  sql << ", " << core::TopNRowNumberNode::rankFunctionName(node.rankFunction())
+      << "() OVER (";
 
   const auto& partitionKeys = node.partitionKeys();
   if (!partitionKeys.empty()) {
@@ -344,7 +345,7 @@ void PrestoQueryRunnerToSqlPlanNodeVisitor::visit(
   std::stringstream sql;
   sql << "SELECT ";
 
-  const auto& inputType = node.sources()[0]->outputType();
+  const auto& inputType = node.inputType();
   for (auto i = 0; i < inputType->size(); ++i) {
     appendComma(i, sql);
     sql << inputType->nameOf(i);
@@ -380,7 +381,7 @@ void PrestoQueryRunnerToSqlPlanNodeVisitor::visit(
     }
 
     sql << " " << queryRunnerContext_->windowFrames_.at(node.id()).at(i);
-    sql << ")";
+    sql << ") as " << node.windowColumnNames()[i];
   }
 
   // WindowNode should have a single source.

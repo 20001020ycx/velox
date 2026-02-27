@@ -18,6 +18,7 @@
 
 #include "velox/vector/ConstantVector.h"
 #include "velox/vector/DecodedVector.h"
+#include "velox/vector/LazyVector.h"
 #include "velox/vector/VectorTypeUtils.h"
 
 namespace facebook::velox {
@@ -1066,7 +1067,7 @@ void encodedVectorCopy(
     VELOX_CHECK(source->pool() == options.pool);
   }
   if (target) {
-    VELOX_CHECK(*target->type() == *source->type());
+    VELOX_CHECK(target->type()->equivalent(*source->type()));
     VELOX_CHECK(target->pool() == options.pool);
   }
   VELOX_CHECK(

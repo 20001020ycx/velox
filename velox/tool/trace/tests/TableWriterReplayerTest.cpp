@@ -23,7 +23,7 @@
 #include "folly/dynamic.h"
 #include "velox/common/base/Fs.h"
 #include "velox/common/file/FileSystems.h"
-#include "velox/common/hyperloglog/SparseHll.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/exec/OperatorTraceReader.h"
 #include "velox/exec/PartitionFunction.h"
 #include "velox/exec/TableWriter.h"
@@ -60,12 +60,9 @@ class TableWriterReplayerTest : public HiveConnectorTestBase {
     }
     Type::registerSerDe();
     common::Filter::registerSerDe();
-    connector::hive::HiveTableHandle::registerSerDe();
-    connector::hive::LocationHandle::registerSerDe();
-    connector::hive::HiveColumnHandle::registerSerDe();
-    connector::hive::HiveInsertTableHandle::registerSerDe();
-    connector::hive::HiveInsertFileNameGenerator::registerSerDe();
+    connector::hive::HiveConnector::registerSerDe();
     core::PlanNode::registerSerDe();
+    velox::exec::trace::registerDummySourceSerDe();
     core::ITypedExpr::registerSerDe();
     registerPartitionFunctionSerDe();
   }
@@ -126,12 +123,12 @@ class TableWriterReplayerTest : public HiveConnectorTestBase {
           connector::hive::LocationHandle::TableType::kNew,
       const CommitStrategy& outputCommitStrategy = CommitStrategy::kNoCommit,
       bool aggregateResult = true,
-      std::shared_ptr<core::AggregationNode> aggregationNode = nullptr) {
+      const std::optional<ColumnStatsSpec> statsSpec = std::nullopt) {
     auto insertPlan = inputPlan
                           .addNode(addTableWriter(
                               inputRowType,
                               tableRowType->names(),
-                              aggregationNode,
+                              statsSpec,
                               createInsertTableHandle(
                                   tableRowType,
                                   outputTableType,
@@ -154,29 +151,21 @@ class TableWriterReplayerTest : public HiveConnectorTestBase {
   std::function<PlanNodePtr(std::string, PlanNodePtr)> addTableWriter(
       const RowTypePtr& inputColumns,
       const std::vector<std::string>& tableColumnNames,
-      const std::shared_ptr<core::AggregationNode>& aggregationNode,
+      const std::optional<ColumnStatsSpec>& statsSpec,
       const std::shared_ptr<core::InsertTableHandle>& insertHandle,
       bool hasPartitioningScheme,
       connector::CommitStrategy commitStrategy =
           connector::CommitStrategy::kNoCommit) {
     return [=](core::PlanNodeId nodeId,
                core::PlanNodePtr source) -> core::PlanNodePtr {
-      std::shared_ptr<core::AggregationNode> aggNode = nullptr;
-      if (aggregationNode == nullptr) {
-        aggNode = generateAggregationNode(
-            "c0", nodeId, {}, core::AggregationNode::Step::kPartial, source);
-      } else {
-        aggNode = aggregationNode;
-      }
-
       return std::make_shared<core::TableWriteNode>(
           nodeId,
           inputColumns,
           tableColumnNames,
-          aggNode,
+          statsSpec,
           insertHandle,
           hasPartitioningScheme,
-          TableWriteTraits::outputType(aggNode),
+          TableWriteTraits::outputType(statsSpec),
           commitStrategy,
           source);
     };
@@ -205,8 +194,9 @@ class TableWriterReplayerTest : public HiveConnectorTestBase {
 
     for (auto& path : fs::recursive_directory_iterator(directoryPath)) {
       if (path.is_regular_file()) {
-        splits.push_back(HiveConnectorTestBase::makeHiveConnectorSplits(
-            path.path().string(), 1, fileFormat_)[0]);
+        splits.push_back(
+            HiveConnectorTestBase::makeHiveConnectorSplits(
+                path.path().string(), 1, fileFormat_)[0]);
       }
     }
 
@@ -237,7 +227,7 @@ class TableWriterReplayerTest : public HiveConnectorTestBase {
     }
   }
 
-  static std::shared_ptr<core::AggregationNode> generateAggregationNode(
+  static std::shared_ptr<core::AggregationNode> generateColumnStatsSpec(
       const std::string& name,
       const core::PlanNodeId nodeId,
       const std::vector<core::FieldAccessTypedExprPtr>& groupingKeys,
@@ -246,7 +236,7 @@ class TableWriterReplayerTest : public HiveConnectorTestBase {
     core::TypedExprPtr inputField =
         std::make_shared<const core::FieldAccessTypedExpr>(BIGINT(), name);
     auto callExpr = std::make_shared<const core::CallTypedExpr>(
-        BIGINT(), std::vector<core::TypedExprPtr>{inputField}, "min");
+        BIGINT(), "min", inputField);
     std::vector<std::string> aggregateNames = {"min"};
     std::vector<core::AggregationNode::Aggregate> aggregates = {
         core::AggregationNode::Aggregate{
@@ -293,7 +283,7 @@ TEST_F(TableWriterReplayerTest, runner) {
           .config(core::QueryConfig::kQueryTraceDir, traceRoot)
           .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
           .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-          .config(core::QueryConfig::kQueryTraceNodeIds, traceNodeId)
+          .config(core::QueryConfig::kQueryTraceNodeId, traceNodeId)
           .split(makeHiveConnectorSplit(sourceFilePath->getPath()))
           .copyResults(pool(), task);
 
@@ -364,7 +354,7 @@ TEST_F(TableWriterReplayerTest, basic) {
           .config(core::QueryConfig::kQueryTraceDir, traceRoot)
           .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
           .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-          .config(core::QueryConfig::kQueryTraceNodeIds, planNodeId)
+          .config(core::QueryConfig::kQueryTraceNodeId, planNodeId)
           .split(makeHiveConnectorSplit(sourceFilePath->getPath()))
           .copyResults(pool(), task);
   const auto traceOutputDir = TempDirectoryPath::create();
@@ -383,7 +373,8 @@ TEST_F(TableWriterReplayerTest, basic) {
   // Second column contains details about written files.
   const auto details = results->childAt(TableWriteTraits::kFragmentChannel)
                            ->as<FlatVector<StringView>>();
-  const folly::dynamic obj = folly::parseJson(details->valueAt(1));
+  const folly::dynamic obj =
+      folly::parseJson(std::string_view(details->valueAt(1)));
   const auto fileWriteInfos = obj["fileWriteInfos"];
   ASSERT_EQ(1, fileWriteInfos.size());
 
@@ -393,8 +384,9 @@ TEST_F(TableWriterReplayerTest, basic) {
 
   const auto copy =
       AssertQueryBuilder(plan)
-          .split(makeHiveConnectorSplit(fmt::format(
-              "{}/{}", targetDirectoryPath->getPath(), writeFileName)))
+          .split(makeHiveConnectorSplit(
+              fmt::format(
+                  "{}/{}", targetDirectoryPath->getPath(), writeFileName)))
           .copyResults(pool());
   assertEqualResults({data}, {copy});
 }
@@ -482,7 +474,7 @@ TEST_F(TableWriterReplayerTest, partitionWrite) {
       .config(core::QueryConfig::kQueryTraceDir, traceRoot)
       .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
       .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-      .config(core::QueryConfig::kQueryTraceNodeIds, tableWriteNodeId)
+      .config(core::QueryConfig::kQueryTraceNodeId, tableWriteNodeId)
       .splits(makeHiveConnectorSplits(inputFilePaths))
       .copyResults(pool(), task);
   actualPartitionDirectories =

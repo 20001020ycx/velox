@@ -15,13 +15,16 @@
  */
 
 #include <gtest/gtest.h>
+#include "velox/common/caching/AsyncDataCache.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 
 #include <folly/init/Init.h>
+#include <folly/system/HardwareConcurrency.h>
 #include <re2/re2.h>
 #include "velox/common/base/Fs.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/testutil/TestValue.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/Options.h"
 #include "velox/dwio/dwrf/reader/DwrfReader.h"
@@ -71,7 +74,7 @@ class HiveDataSinkTest : public exec::test::HiveConnectorTestBase {
     setupMemoryPools();
 
     spillExecutor_ = std::make_unique<folly::IOThreadPoolExecutor>(
-        std::thread::hardware_concurrency());
+        folly::hardware_concurrency());
   }
 
   void TearDown() override {
@@ -111,7 +114,8 @@ class HiveDataSinkTest : public exec::test::HiveConnectorTestBase {
         0,
         0,
         writerFlushThreshold,
-        "none");
+        "none",
+        0);
   }
 
   void setupMemoryPools() {
@@ -1314,6 +1318,108 @@ TEST_F(HiveDataSinkTest, ensureFilesUnsupported) {
           ),
       "ensureFiles is not supported with bucketing");
 }
+
+TEST_F(HiveDataSinkTest, raceWithCacheEviction) {
+  /// This test ensures that LRU cache staleness and StringIdMap cache
+  /// eviction do not cause issues with file reads.
+  std::atomic<bool> stop{false};
+  auto cacheCleaner = std::async(std::launch::async, [&] {
+    auto cache = cache::AsyncDataCache::getInstance();
+    auto hiveConnector = std::dynamic_pointer_cast<HiveConnector>(
+        getConnector(exec::test::kHiveConnectorId));
+    while (!stop) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      cache->clear();
+      hiveConnector->clearFileHandleCache();
+    }
+  });
+
+  const auto outputDirectory = TempDirectoryPath::create();
+  auto dataSink = createDataSink(rowType_, outputDirectory->getPath());
+  const auto vectors = createVectors(500 /*vectorSize*/, 10 /*numVectors*/);
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+  ASSERT_TRUE(dataSink->finish());
+  ASSERT_FALSE(dataSink->close().empty());
+
+  createDuckDbTable(vectors);
+  verifyWrittenData(outputDirectory->getPath());
+
+  stop = true;
+  cacheCleaner.get();
+}
+
+#ifdef VELOX_ENABLE_PARQUET
+TEST_F(HiveDataSinkTest, lazyVectorForParquet) {
+  // This test ensures that lazy vector is handled correctly in HiveDataSink.
+  VectorFuzzer::Options options{.vectorSize = 100};
+  VectorFuzzer fuzzer(options, pool());
+
+  auto lazyVector = fuzzer.wrapInLazyVector(fuzzer.fuzzFlat(BIGINT(), 100));
+  auto lazyMapVector = fuzzer.wrapInLazyVector(fuzzer.fuzzMap(
+      fuzzer.fuzzFlat(BIGINT(), 100), fuzzer.fuzzFlat(VARCHAR(), 100), 100));
+
+  auto rowType = ROW({"c0", "c1"}, {BIGINT(), MAP(BIGINT(), VARCHAR())});
+  std::vector<VectorPtr> children;
+  children.emplace_back(lazyVector);
+  children.emplace_back(lazyMapVector);
+  auto row = std::make_shared<RowVector>(
+      pool(), rowType, nullptr, 100, std::move(children));
+
+  const auto outputDirectory = TempDirectoryPath::create();
+  auto dataSink = createDataSink(
+      rowType, outputDirectory->getPath(), dwio::common::FileFormat::PARQUET);
+
+  dataSink->appendData(row);
+  ASSERT_TRUE(dataSink->finish());
+  dataSink->close();
+}
+#endif
+
+// Test to verify that each writer has its own nonReclaimableSection
+// pointer when writerOptions is shared.
+TEST_F(HiveDataSinkTest, sharedWriterOptionsWithMultipleWriters) {
+  const auto outputDirectory = TempDirectoryPath::create();
+
+  const int32_t numBuckets = 3;
+  auto bucketProperty = std::make_shared<HiveBucketProperty>(
+      HiveBucketProperty::Kind::kHiveCompatible,
+      numBuckets,
+      std::vector<std::string>{"c0"},
+      std::vector<TypePtr>{BIGINT()},
+      std::vector<std::shared_ptr<const HiveSortingColumn>>{});
+
+  // Create shared writer options (this simulates the scenario where
+  // insertTableHandle_->writerOptions() returns a shared object)
+  auto sharedWriterOptions = std::make_shared<dwrf::WriterOptions>();
+
+  // Create a data sink with multiple writers (one for each bucket)
+  auto dataSink = createDataSink(
+      rowType_,
+      outputDirectory->getPath(),
+      dwio::common::FileFormat::DWRF,
+      {},
+      bucketProperty,
+      sharedWriterOptions);
+
+  const auto vectors = createVectors(200, 3);
+
+  // Write data - this should work without throwing exceptions
+  for (const auto& vector : vectors) {
+    dataSink->appendData(vector);
+  }
+
+  while (!dataSink->finish()) {
+  }
+  const auto partitions = dataSink->close();
+
+  ASSERT_GT(partitions.size(), 1);
+  createDuckDbTable(vectors);
+  verifyWrittenData(
+      outputDirectory->getPath(), static_cast<int32_t>(partitions.size()));
+}
+
 } // namespace
 } // namespace facebook::velox::connector::hive
 

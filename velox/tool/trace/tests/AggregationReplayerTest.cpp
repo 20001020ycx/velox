@@ -25,6 +25,7 @@
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/hyperloglog/SparseHll.h"
 #include "velox/common/testutil/TestValue.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/dwrf/writer/Writer.h"
 #include "velox/exec/PartitionFunction.h"
 #include "velox/exec/TableWriter.h"
@@ -66,12 +67,9 @@ class AggregationReplayerTest : public HiveConnectorTestBase {
     }
     Type::registerSerDe();
     common::Filter::registerSerDe();
-    connector::hive::HiveTableHandle::registerSerDe();
-    connector::hive::LocationHandle::registerSerDe();
-    connector::hive::HiveColumnHandle::registerSerDe();
-    connector::hive::HiveInsertTableHandle::registerSerDe();
-    connector::hive::HiveInsertFileNameGenerator::registerSerDe();
+    connector::hive::HiveConnector::registerSerDe();
     core::PlanNode::registerSerDe();
+    velox::exec::trace::registerDummySourceSerDe();
     core::ITypedExpr::registerSerDe();
     registerPartitionFunctionSerDe();
   }
@@ -262,7 +260,7 @@ TEST_F(AggregationReplayerTest, hashAggregationTest) {
               .config(core::QueryConfig::kQueryTraceDir, traceRoot)
               .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
               .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-              .config(core::QueryConfig::kQueryTraceNodeIds, traceNodeId_)
+              .config(core::QueryConfig::kQueryTraceNodeId, traceNodeId_)
               .split(makeHiveConnectorSplit(sourceFilePath->getPath()))
               .copyResults(pool(), task);
 
@@ -272,6 +270,7 @@ TEST_F(AggregationReplayerTest, hashAggregationTest) {
                                        task->taskId(),
                                        traceNodeId_,
                                        "Aggregation",
+                                       "",
                                        "",
                                        0,
                                        executor_.get())
@@ -328,7 +327,7 @@ TEST_F(AggregationReplayerTest, streamingAggregateTest) {
               .config(core::QueryConfig::kQueryTraceDir, traceRoot)
               .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
               .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-              .config(core::QueryConfig::kQueryTraceNodeIds, traceNodeId_)
+              .config(core::QueryConfig::kQueryTraceNodeId, traceNodeId_)
               .split(makeHiveConnectorSplit(sourceFilePath->getPath()))
               .copyResults(pool(), task);
 
@@ -338,6 +337,7 @@ TEST_F(AggregationReplayerTest, streamingAggregateTest) {
                                        task->taskId(),
                                        traceNodeId_,
                                        "Aggregation",
+                                       "",
                                        "",
                                        0,
                                        executor_.get())

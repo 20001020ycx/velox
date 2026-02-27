@@ -16,6 +16,9 @@
 
 #include "velox/functions/prestosql/types/IPAddressRegistration.h"
 
+#include <limits>
+
+#include "velox/common/fuzzer/ConstrainedGenerators.h"
 #include "velox/expression/CastExpr.h"
 #include "velox/functions/prestosql/types/IPAddressType.h"
 #include "velox/functions/prestosql/types/IPPrefixType.h"
@@ -133,8 +136,9 @@ class IPAddressCastOperator : public exec::CastOperator {
 
     context.applyToSelectedNoThrow(rows, [&](auto row) {
       const auto ipAddressString = ipAddressStrings->valueAt(row);
-      auto maybeIpAsInt128 =
-          ipaddress::tryGetIPv6asInt128FromString(ipAddressString);
+      // TODO: Remove explicit std::string_view cast.
+      auto maybeIpAsInt128 = ipaddress::tryGetIPv6asInt128FromString(
+          std::string_view(ipAddressString));
 
       if (maybeIpAsInt128.hasError()) {
         if (threadSkipErrorDetails()) {
@@ -253,9 +257,9 @@ class IPAddressCastOperator : public exec::CastOperator {
   }
 };
 
-class IPAddressTypeFactories : public CustomTypeFactories {
+class IPAddressTypeFactory : public CustomTypeFactory {
  public:
-  IPAddressTypeFactories() = default;
+  IPAddressTypeFactory() = default;
 
   TypePtr getType(const std::vector<TypeParameter>& parameters) const override {
     VELOX_CHECK(parameters.empty());
@@ -267,14 +271,19 @@ class IPAddressTypeFactories : public CustomTypeFactories {
   }
 
   AbstractInputGeneratorPtr getInputGenerator(
-      const InputGeneratorConfig& /*config*/) const override {
-    return nullptr;
+      const InputGeneratorConfig& config) const override {
+    return std::make_shared<fuzzer::RangeConstrainedGenerator<int128_t>>(
+        config.seed_,
+        IPADDRESS(),
+        config.nullRatio_,
+        0,
+        std::numeric_limits<int128_t>::max());
   }
 };
 } // namespace
 
 void registerIPAddressType() {
   registerCustomType(
-      "ipaddress", std::make_unique<const IPAddressTypeFactories>());
+      "ipaddress", std::make_unique<const IPAddressTypeFactory>());
 }
 } // namespace facebook::velox

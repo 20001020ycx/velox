@@ -14,10 +14,13 @@
 include_guard(GLOBAL)
 
 set(VELOX_NLOHMANN_JSON_BUILD_VERSION 3.11.3)
-set(VELOX_NLOHMANN_JSON_BUILD_SHA256_CHECKSUM
-    0d8ef5af7f9794e3263480193c491549b2ba6cc74bb018906202ada498a79406)
-set(VELOX_NLOHMANN_JSON_SOURCE_URL
-    "https://github.com/nlohmann/json/archive/refs/tags/v${VELOX_NLOHMANN_JSON_BUILD_VERSION}.tar.gz"
+set(
+  VELOX_NLOHMANN_JSON_BUILD_SHA256_CHECKSUM
+  0d8ef5af7f9794e3263480193c491549b2ba6cc74bb018906202ada498a79406
+)
+set(
+  VELOX_NLOHMANN_JSON_SOURCE_URL
+  "https://github.com/nlohmann/json/archive/refs/tags/v${VELOX_NLOHMANN_JSON_BUILD_VERSION}.tar.gz"
 )
 
 velox_resolve_dependency_url(NLOHMANN_JSON)
@@ -28,10 +31,9 @@ FetchContent_Declare(
   nlohmann_json
   URL ${VELOX_NLOHMANN_JSON_SOURCE_URL}
   URL_HASH ${VELOX_NLOHMANN_JSON_BUILD_SHA256_CHECKSUM}
-  OVERRIDE_FIND_PACKAGE)
+  OVERRIDE_FIND_PACKAGE
+)
 
-set(JSON_BuildTests
-    OFF
-    CACHE INTERNAL "")
+set(JSON_BuildTests OFF CACHE INTERNAL "")
 
 FetchContent_MakeAvailable(nlohmann_json)

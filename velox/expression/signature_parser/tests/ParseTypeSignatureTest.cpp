@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include <gtest/gtest.h>
-
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/expression/signature_parser/SignatureParser.h"
 
 using namespace facebook::velox::exec;
@@ -52,9 +52,9 @@ static const TypePtr& TIMESTAMP_WITH_TIME_ZONE() {
   return instance;
 }
 
-class TypeFactories : public CustomTypeFactories {
+class TypeFactory : public CustomTypeFactory {
  public:
-  TypeFactories(const TypePtr& type) : type_(type) {}
+  TypeFactory(const TypePtr& type) : type_(type) {}
 
   TypePtr getType(const std::vector<TypeParameter>& parameters) const override {
     VELOX_CHECK(parameters.empty());
@@ -78,10 +78,10 @@ class ParseTypeSignatureTest : public ::testing::Test {
  private:
   void SetUp() override {
     // Register custom types with and without spaces.
-    registerCustomType("json", std::make_unique<const TypeFactories>(JSON()));
+    registerCustomType("json", std::make_unique<const TypeFactory>(JSON()));
     registerCustomType(
         "timestamp with time zone",
-        std::make_unique<const TypeFactories>(TIMESTAMP_WITH_TIME_ZONE()));
+        std::make_unique<const TypeFactory>(TIMESTAMP_WITH_TIME_ZONE()));
   }
 };
 
@@ -191,7 +191,7 @@ TEST_F(ParseTypeSignatureTest, row) {
     ASSERT_EQ(signature.parameters().size(), 1);
   }
 
-  // test quoted row fields.
+  // Test quoted row fields.
   {
     auto signature = parseTypeSignature("row(\"12col0\" v, l)");
     ASSERT_EQ(signature.baseName(), "row");
@@ -230,6 +230,82 @@ TEST_F(ParseTypeSignatureTest, row) {
     ASSERT_EQ(rowfield.rowFieldName(), "bla");
     ASSERT_EQ(rowfield.parameters().size(), 0);
   }
+
+  {
+    auto signature = parseTypeSignature("row(\"a (b)\" INTEGER)");
+    ASSERT_EQ(signature.baseName(), "row");
+    ASSERT_EQ(signature.parameters().size(), 1);
+    auto field0 = signature.parameters()[0];
+    ASSERT_EQ(field0.baseName(), "INTEGER");
+    ASSERT_EQ(field0.rowFieldName(), "a (b)");
+  }
+
+  // Test double double quote escape
+  {
+    auto signature = parseTypeSignature(
+        "row(\"a\"\"b\" INTEGER, \"\"\"ab\" INTEGER, \"ab\"\"\"\"\" INTEGER)");
+    ASSERT_EQ(signature.baseName(), "row");
+    ASSERT_EQ(signature.parameters().size(), 3);
+    auto field0 = signature.parameters()[0];
+    ASSERT_EQ(field0.baseName(), "INTEGER");
+    ASSERT_EQ(field0.rowFieldName(), "a\"b");
+    auto field1 = signature.parameters()[1];
+    ASSERT_EQ(field1.baseName(), "INTEGER");
+    ASSERT_EQ(field1.rowFieldName(), "\"ab");
+    auto field2 = signature.parameters()[2];
+    ASSERT_EQ(field2.baseName(), "INTEGER");
+    ASSERT_EQ(field2.rowFieldName(), "ab\"\"");
+  }
+
+  // Single double quote is an error.
+  EXPECT_THROW(parseTypeSignature("row(\"a\"b\" INTEGER)"), VeloxRuntimeError);
+}
+
+TEST_F(ParseTypeSignatureTest, homogeneousRow) {
+  {
+    auto signature = parseTypeSignature("row(varchar, ...)");
+    ASSERT_TRUE(signature.isHomogeneousRow());
+    ASSERT_EQ(signature.toString(), "row(varchar, ...)");
+
+    ASSERT_EQ(signature.baseName(), "row");
+    ASSERT_EQ(signature.parameters().size(), 1);
+    auto field = signature.parameters()[0];
+    ASSERT_EQ(field.baseName(), "varchar");
+    ASSERT_FALSE(field.variableArity());
+  }
+
+  {
+    auto signature = parseTypeSignature("row(T, ...)");
+    ASSERT_TRUE(signature.isHomogeneousRow());
+    ASSERT_EQ(signature.toString(), "row(T, ...)");
+
+    ASSERT_EQ(signature.baseName(), "row");
+    ASSERT_EQ(signature.parameters().size(), 1);
+    auto field = signature.parameters()[0];
+    ASSERT_EQ(field.baseName(), "T");
+    ASSERT_FALSE(field.variableArity());
+  }
+
+  {
+    auto signature = parseTypeSignature("row(array(bigint), ...)");
+    ASSERT_TRUE(signature.isHomogeneousRow());
+    ASSERT_EQ(signature.toString(), "row(array(bigint), ...)");
+
+    ASSERT_EQ(signature.baseName(), "row");
+    ASSERT_EQ(signature.parameters().size(), 1);
+    auto field = signature.parameters()[0];
+    ASSERT_EQ(field.baseName(), "array");
+    ASSERT_FALSE(field.variableArity());
+  }
+
+  VELOX_ASSERT_RUNTIME_THROW(
+      parseTypeSignature("row(integer, boolean, ...)"),
+      "Failed to parse type signature [row(integer, boolean, ...)]: syntax error, unexpected ELLIPSIS");
+
+  // Homogeneous row with named field is not allowed.
+  VELOX_ASSERT_RUNTIME_THROW(
+      parseTypeSignature("row(name varchar, ...)"),
+      "Homogeneous row cannot have a field name");
 }
 
 TEST_F(ParseTypeSignatureTest, tdigest) {
@@ -252,10 +328,15 @@ TEST_F(ParseTypeSignatureTest, roundTrip) {
 
   ASSERT_EQ(roundTrip("function(S,R)"), "function(S,R)");
 
-  // Test a complex type as the second field in a row
+  // Test a complex type as the second field in a row.
   ASSERT_EQ(
       roundTrip("row(map(K,V),map(bigint,array(double)))"),
       "row(map(K,V),map(bigint,array(double)))");
+
+  // Test homogeneous row round-trip parsing.
+  ASSERT_EQ(roundTrip("row(T, ...)"), "row(T, ...)");
+  ASSERT_EQ(roundTrip("row(varchar, ...)"), "row(varchar, ...)");
+  ASSERT_EQ(roundTrip("row(bigint, ...)"), "row(bigint, ...)");
 }
 
 TEST_F(ParseTypeSignatureTest, invalidSignatures) {

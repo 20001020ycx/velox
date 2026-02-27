@@ -21,15 +21,14 @@
 
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/file/FileSystems.h"
-#include "velox/connectors/hive/HiveConnectorSplit.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/exec/OperatorTraceReader.h"
-#include "velox/exec/OperatorTraceWriter.h"
 #include "velox/exec/PartitionFunction.h"
 #include "velox/exec/Split.h"
 #include "velox/exec/TaskTraceReader.h"
+#include "velox/exec/TaskTraceWriter.h"
 #include "velox/exec/Trace.h"
 #include "velox/exec/TraceUtil.h"
-#include "velox/exec/tests/utils/ArbitratorTestUtil.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
@@ -50,15 +49,11 @@ class OperatorTraceTest : public HiveConnectorTestBase {
     }
     Type::registerSerDe();
     common::Filter::registerSerDe();
-    connector::hive::HiveTableHandle::registerSerDe();
-    connector::hive::LocationHandle::registerSerDe();
-    connector::hive::HiveColumnHandle::registerSerDe();
-    connector::hive::HiveInsertTableHandle::registerSerDe();
-    connector::hive::HiveConnectorSplit::registerSerDe();
-    connector::hive::HiveInsertFileNameGenerator::registerSerDe();
+    connector::hive::HiveConnector::registerSerDe();
     core::PlanNode::registerSerDe();
     core::ITypedExpr::registerSerDe();
     registerPartitionFunctionSerDe();
+    registerDummySourceSerDe();
   }
 
   void SetUp() override {
@@ -100,7 +95,9 @@ class OperatorTraceTest : public HiveConnectorTestBase {
     }
 
     for (auto i = 0; i < left->sources().size(); ++i) {
-      isSamePlan(left->sources().at(i), right->sources().at(i));
+      if (!isSamePlan(left->sources().at(i), right->sources().at(i))) {
+        return false;
+      }
     }
     return true;
   }
@@ -135,7 +132,7 @@ TEST_F(OperatorTraceTest, emptyTrace) {
           .config(core::QueryConfig::kQueryTraceDir, traceDirPath->getPath())
           .config(core::QueryConfig::kQueryTraceMaxBytes, 100UL << 30)
           .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-          .config(core::QueryConfig::kQueryTraceNodeIds, planNodeId)
+          .config(core::QueryConfig::kQueryTraceNodeId, planNodeId)
           .assertResults("SELECT a, count(1) FROM tmp WHERE a > 0 GROUP BY 1");
 
   const auto taskTraceDir =
@@ -200,7 +197,7 @@ TEST_F(OperatorTraceTest, traceData) {
                   core::QueryConfig::kQueryTraceMaxBytes,
                   testData.maxTracedBytes)
               .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-              .config(core::QueryConfig::kQueryTraceNodeIds, planNodeId)
+              .config(core::QueryConfig::kQueryTraceNodeId, planNodeId)
               .assertResults("SELECT a, count(1) FROM tmp GROUP BY 1"),
           "Query exceeded per-query local trace limit of");
       continue;
@@ -213,7 +210,7 @@ TEST_F(OperatorTraceTest, traceData) {
             .config(
                 core::QueryConfig::kQueryTraceMaxBytes, testData.maxTracedBytes)
             .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-            .config(core::QueryConfig::kQueryTraceNodeIds, planNodeId)
+            .config(core::QueryConfig::kQueryTraceNodeId, planNodeId)
             .assertResults("SELECT a, count(1) FROM tmp GROUP BY 1");
 
     const auto fs =
@@ -268,6 +265,7 @@ TEST_F(OperatorTraceTest, traceMetadata) {
 
   const auto outputDir = TempDirectoryPath::create();
   auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  core::PlanNodeId traceNodeId;
   const auto planNode =
       PlanBuilder(planNodeIdGenerator)
           .values(rows, false)
@@ -283,6 +281,7 @@ TEST_F(OperatorTraceTest, traceMetadata) {
               "c0 < 135",
               {"c0", "c1", "c2"},
               core::JoinType::kInner)
+          .capturePlanNodeId(traceNodeId)
           .planNode();
   const auto expectedQueryConfigs =
       std::unordered_map<std::string, std::string>{
@@ -301,14 +300,15 @@ TEST_F(OperatorTraceTest, traceMetadata) {
       core::QueryConfig(expectedQueryConfigs),
       expectedConnectorProperties);
   auto writer = trace::TaskTraceMetadataWriter(outputDir->getPath(), pool());
-  writer.write(queryCtx, planNode);
+  auto traceNode = getTraceNode(planNode, traceNodeId);
+  writer.write(queryCtx, traceNode);
   const auto reader =
       trace::TaskTraceMetadataReader(outputDir->getPath(), pool());
   const auto actualQueryConfigs = reader.queryConfigs();
   const auto actualConnectorProperties = reader.connectorProperties();
   const auto actualQueryPlan = reader.queryPlan();
 
-  ASSERT_TRUE(isSamePlan(actualQueryPlan, planNode));
+  ASSERT_TRUE(isSamePlan(actualQueryPlan, traceNode));
   ASSERT_EQ(actualQueryConfigs.size(), expectedQueryConfigs.size());
   for (const auto& [key, value] : actualQueryConfigs) {
     ASSERT_EQ(actualQueryConfigs.at(key), expectedQueryConfigs.at(key));
@@ -380,7 +380,7 @@ TEST_F(OperatorTraceTest, task) {
              std::to_string(100UL << 30)},
             {core::QueryConfig::kQueryTraceDir, outputDir->getPath()},
             {core::QueryConfig::kQueryTraceTaskRegExp, testData.taskRegExpr},
-            {core::QueryConfig::kQueryTraceNodeIds, hashJoinNodeId},
+            {core::QueryConfig::kQueryTraceNodeId, hashJoinNodeId},
             {"key1", "value1"},
         };
 
@@ -423,7 +423,8 @@ TEST_F(OperatorTraceTest, task) {
     const auto actualConnectorProperties = reader.connectorProperties();
     const auto actualQueryPlan = reader.queryPlan();
 
-    ASSERT_TRUE(isSamePlan(actualQueryPlan, planNode));
+    ASSERT_TRUE(
+        isSamePlan(actualQueryPlan, getTraceNode(planNode, hashJoinNodeId)));
     ASSERT_EQ(actualQueryConfigs.size(), expectedQueryConfigs.size());
     for (const auto& [key, value] : actualQueryConfigs) {
       ASSERT_EQ(actualQueryConfigs.at(key), expectedQueryConfigs.at(key));
@@ -486,32 +487,16 @@ TEST_F(OperatorTraceTest, error) {
             .queryCtx(queryCtx)
             .maxDrivers(1)
             .copyResults(pool()),
-        "Query trace nodes are not set");
+        "Query trace node ID are not set");
   }
-  // Duplicate trace plan node ids.
-  {
-    const auto queryConfigs = std::unordered_map<std::string, std::string>{
-        {core::QueryConfig::kQueryTraceEnabled, "true"},
-        {core::QueryConfig::kQueryTraceDir, "traceDir"},
-        {core::QueryConfig::kQueryTraceTaskRegExp, ".*"},
-        {core::QueryConfig::kQueryTraceNodeIds, "1,1"},
-    };
-    const auto queryCtx = core::QueryCtx::create(
-        executor_.get(), core::QueryConfig(queryConfigs));
-    VELOX_ASSERT_USER_THROW(
-        AssertQueryBuilder(planNode)
-            .queryCtx(queryCtx)
-            .maxDrivers(1)
-            .copyResults(pool()),
-        "Duplicate trace nodes found: 1, 1");
-  }
+
   // Nonexist trace plan node id.
   {
     const auto queryConfigs = std::unordered_map<std::string, std::string>{
         {core::QueryConfig::kQueryTraceEnabled, "true"},
         {core::QueryConfig::kQueryTraceDir, "traceDir"},
         {core::QueryConfig::kQueryTraceTaskRegExp, ".*"},
-        {core::QueryConfig::kQueryTraceNodeIds, "nonexist"},
+        {core::QueryConfig::kQueryTraceNodeId, "nonexist"},
     };
     const auto queryCtx = core::QueryCtx::create(
         executor_.get(), core::QueryConfig(queryConfigs));
@@ -520,7 +505,8 @@ TEST_F(OperatorTraceTest, error) {
             .queryCtx(queryCtx)
             .maxDrivers(1)
             .copyResults(pool()),
-        "Trace plan nodes not found from task");
+
+        "Trace plan node ID = nonexist not found from task");
   }
 }
 
@@ -578,7 +564,7 @@ TEST_F(OperatorTraceTest, traceTableWriter) {
               .config(
                   core::QueryConfig::kQueryTraceTaskRegExp,
                   testData.taskRegExpr)
-              .config(core::QueryConfig::kQueryTraceNodeIds, tableWriteNodeId)
+              .config(core::QueryConfig::kQueryTraceNodeId, tableWriteNodeId)
               .copyResults(pool(), task),
           "Query exceeded per-query local trace limit of");
       continue;
@@ -589,7 +575,7 @@ TEST_F(OperatorTraceTest, traceTableWriter) {
         .config(core::QueryConfig::kQueryTraceDir, traceRoot)
         .config(core::QueryConfig::kQueryTraceMaxBytes, testData.maxTracedBytes)
         .config(core::QueryConfig::kQueryTraceTaskRegExp, testData.taskRegExpr)
-        .config(core::QueryConfig::kQueryTraceNodeIds, tableWriteNodeId)
+        .config(core::QueryConfig::kQueryTraceNodeId, tableWriteNodeId)
         .copyResults(pool(), task);
 
     const auto taskTraceDir = getTaskTraceDirectory(traceRoot, *task);
@@ -684,7 +670,7 @@ TEST_F(OperatorTraceTest, filterProject) {
               .config(
                   core::QueryConfig::kQueryTraceTaskRegExp,
                   testData.taskRegExpr)
-              .config(core::QueryConfig::kQueryTraceNodeIds, projectNodeId)
+              .config(core::QueryConfig::kQueryTraceNodeId, projectNodeId)
               .copyResults(pool(), task),
           "Query exceeded per-query local trace limit of");
       continue;
@@ -695,7 +681,7 @@ TEST_F(OperatorTraceTest, filterProject) {
         .config(core::QueryConfig::kQueryTraceDir, traceRoot)
         .config(core::QueryConfig::kQueryTraceMaxBytes, testData.maxTracedBytes)
         .config(core::QueryConfig::kQueryTraceTaskRegExp, testData.taskRegExpr)
-        .config(core::QueryConfig::kQueryTraceNodeIds, projectNodeId)
+        .config(core::QueryConfig::kQueryTraceNodeId, projectNodeId)
         .copyResults(pool(), task);
 
     const auto taskTraceDir = getTaskTraceDirectory(traceRoot, *task);
@@ -759,7 +745,7 @@ TEST_F(OperatorTraceTest, traceSplitRoundTrip) {
       .config(core::QueryConfig::kQueryTraceEnabled, true)
       .config(core::QueryConfig::kQueryTraceDir, traceDirPath->getPath())
       .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-      .config(core::QueryConfig::kQueryTraceNodeIds, "0")
+      .config(core::QueryConfig::kQueryTraceNodeId, "0")
       .splits(splits)
       .copyResults(pool(), task);
 
@@ -769,7 +755,7 @@ TEST_F(OperatorTraceTest, traceSplitRoundTrip) {
   for (int i = 0; i < 3; ++i) {
     const auto opTraceDir = getOpTraceDirectory(
         taskTraceDir,
-        /*planNodeId=*/"0",
+        /*nodeId=*/"0",
         /*pipelineId=*/0,
         /*driverId=*/i);
     const auto summaryFilePath = getOpTraceSummaryFilePath(opTraceDir);
@@ -825,7 +811,7 @@ TEST_F(OperatorTraceTest, traceSplitPartial) {
       .config(core::QueryConfig::kQueryTraceEnabled, true)
       .config(core::QueryConfig::kQueryTraceDir, traceDirPath->getPath())
       .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-      .config(core::QueryConfig::kQueryTraceNodeIds, "0")
+      .config(core::QueryConfig::kQueryTraceNodeId, "0")
       .splits(splits)
       .copyResults(pool(), task);
 
@@ -835,7 +821,7 @@ TEST_F(OperatorTraceTest, traceSplitPartial) {
   for (int i = 0; i < 3; ++i) {
     const auto opTraceDir = getOpTraceDirectory(
         taskTraceDir,
-        /*planNodeId=*/"0",
+        /*nodeId=*/"0",
         /*pipelineId=*/0,
         /*driverId=*/i);
     const auto summaryFilePath = getOpTraceSummaryFilePath(opTraceDir);
@@ -914,7 +900,7 @@ TEST_F(OperatorTraceTest, traceSplitCorrupted) {
       .config(core::QueryConfig::kQueryTraceEnabled, true)
       .config(core::QueryConfig::kQueryTraceDir, traceDirPath->getPath())
       .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-      .config(core::QueryConfig::kQueryTraceNodeIds, "0")
+      .config(core::QueryConfig::kQueryTraceNodeId, "0")
       .splits(splits)
       .copyResults(pool(), task);
 
@@ -924,7 +910,7 @@ TEST_F(OperatorTraceTest, traceSplitCorrupted) {
   for (int i = 0; i < 3; ++i) {
     const auto opTraceDir = getOpTraceDirectory(
         taskTraceDir,
-        /*planNodeId=*/"0",
+        /*nodeId=*/"0",
         /*pipelineId=*/0,
         /*driverId=*/i);
     const auto summaryFilePath = getOpTraceSummaryFilePath(opTraceDir);
@@ -1056,7 +1042,7 @@ TEST_F(OperatorTraceTest, hashJoin) {
               .config(
                   core::QueryConfig::kQueryTraceTaskRegExp,
                   testData.taskRegExpr)
-              .config(core::QueryConfig::kQueryTraceNodeIds, hashJoinNodeId)
+              .config(core::QueryConfig::kQueryTraceNodeId, hashJoinNodeId)
               .copyResults(pool(), task),
           "Query exceeded per-query local trace limit of");
       continue;
@@ -1067,7 +1053,7 @@ TEST_F(OperatorTraceTest, hashJoin) {
         .config(core::QueryConfig::kQueryTraceDir, traceRoot)
         .config(core::QueryConfig::kQueryTraceMaxBytes, testData.maxTracedBytes)
         .config(core::QueryConfig::kQueryTraceTaskRegExp, testData.taskRegExpr)
-        .config(core::QueryConfig::kQueryTraceNodeIds, hashJoinNodeId)
+        .config(core::QueryConfig::kQueryTraceNodeId, hashJoinNodeId)
         .copyResults(pool(), task);
 
     const auto taskTraceDir = getTaskTraceDirectory(traceRoot, *task);
@@ -1135,13 +1121,18 @@ TEST_F(OperatorTraceTest, canTrace) {
       {"PartitionedOutput", true},
       {"HashBuild", true},
       {"HashProbe", true},
+      {"IndexLookupJoin", true},
+      {"Unnest", true},
       {"RowNumber", false},
-      {"OrderBy", false},
+      {"OrderBy", true},
+      {"TopNRowNumber", true},
       {"PartialAggregation", true},
       {"Aggregation", true},
       {"TableWrite", true},
       {"TableScan", true},
-      {"FilterProject", true}};
+      {"FilterProject", true},
+      {"Exchange", true},
+      {"MergeExchange", true}};
   for (const auto& testData : testSettings) {
     SCOPED_TRACE(testData.debugString());
     ASSERT_EQ(testData.canTrace, trace::canTrace(testData.operatorType));
@@ -1172,9 +1163,9 @@ TEST_F(OperatorTraceTest, hiveConnectorId) {
       .config(core::QueryConfig::kQueryTraceEnabled, true)
       .config(core::QueryConfig::kQueryTraceDir, traceDirPath->getPath())
       .config(core::QueryConfig::kQueryTraceTaskRegExp, ".*")
-      .config(core::QueryConfig::kQueryTraceNodeIds, "0")
+      .config(core::QueryConfig::kQueryTraceNodeId, "0")
       .splits(splits)
-      .runWithoutResults(task);
+      .countResults(task);
   const auto taskTraceDir =
       getTaskTraceDirectory(traceDirPath->getPath(), *task);
   const auto reader = trace::TaskTraceMetadataReader(taskTraceDir, pool());

@@ -30,6 +30,10 @@ class ClpColumnHandle : public ColumnHandle {
         originalColumnName_(originalColumnName),
         columnType_(columnType) {}
 
+  const std::string& name() const override {
+    return columnName_;
+  }
+
   const std::string& columnName() const {
     return columnName_;
   }

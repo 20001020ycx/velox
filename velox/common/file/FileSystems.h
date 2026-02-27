@@ -17,6 +17,7 @@
 
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/base/RuntimeMetrics.h"
+#include "velox/common/file/TokenProvider.h"
 #include "velox/common/memory/MemoryPool.h"
 
 #include <functional>
@@ -47,10 +48,10 @@ struct FileOptions {
   /// etc.
   static constexpr folly::StringPiece kFileCreateConfig{"file-create-config"};
 
-  std::unordered_map<std::string, std::string> values;
+  std::unordered_map<std::string, std::string> values{};
   memory::MemoryPool* pool{nullptr};
   /// If specified then can be trusted to be the file size.
-  std::optional<int64_t> fileSize;
+  std::optional<int64_t> fileSize{};
 
   /// Whether to create parent directories if they don't exist.
   ///
@@ -84,6 +85,13 @@ struct FileOptions {
   /// A hint to the file system for which region size of the file should be
   /// read. Specifically, the read length.
   std::optional<int64_t> readRangeHint{std::nullopt};
+
+  /// A token provider that can be used to get tokens for accessing the file.
+  std::shared_ptr<TokenProvider> tokenProvider{nullptr};
+
+  /// File read operations metadata that can be passed to the underlying file
+  /// system for tracking and logging purposes.
+  folly::F14FastMap<std::string, std::string> fileReadOps{};
 };
 
 /// Defines directory options

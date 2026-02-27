@@ -265,10 +265,7 @@ AggregationFuzzer::AggregationFuzzer(
 
 void AggregationFuzzer::go(const std::string& planPath) {
   Type::registerSerDe();
-  connector::hive::HiveTableHandle::registerSerDe();
-  connector::hive::LocationHandle::registerSerDe();
-  connector::hive::HiveColumnHandle::registerSerDe();
-  connector::hive::HiveInsertTableHandle::registerSerDe();
+  connector::hive::HiveConnector::registerSerDe();
   core::ITypedExpr::registerSerDe();
   core::PlanNode::registerSerDe();
   registerPartitionFunctionSerDe();
@@ -493,21 +490,23 @@ void makeAlternativePlansWithValues(
     const std::vector<core::ExprPtr>& projections,
     std::vector<core::PlanNodePtr>& plans) {
   // Partial -> final aggregation plan.
-  plans.push_back(PlanBuilder()
-                      .values(inputVectors)
-                      .projectExpressions(projections)
-                      .partialAggregation(groupingKeys, aggregates, masks)
-                      .finalAggregation()
-                      .planNode());
+  plans.push_back(
+      PlanBuilder()
+          .values(inputVectors)
+          .projectExpressions(projections)
+          .partialAggregation(groupingKeys, aggregates, masks)
+          .finalAggregation()
+          .planNode());
 
   // Partial -> intermediate -> final aggregation plan.
-  plans.push_back(PlanBuilder()
-                      .values(inputVectors)
-                      .projectExpressions(projections)
-                      .partialAggregation(groupingKeys, aggregates, masks)
-                      .intermediateAggregation()
-                      .finalAggregation()
-                      .planNode());
+  plans.push_back(
+      PlanBuilder()
+          .values(inputVectors)
+          .projectExpressions(projections)
+          .partialAggregation(groupingKeys, aggregates, masks)
+          .intermediateAggregation()
+          .finalAggregation()
+          .planNode());
 
   // Partial -> local exchange -> final aggregation plan.
   auto numSources = std::min<size_t>(4, inputVectors.size());
@@ -553,23 +552,25 @@ void makeAlternativePlansWithTableScan(
 // the false negatives.
 #ifndef TSAN_BUILD
   // Partial -> final aggregation plan.
-  plans.push_back(PlanBuilder()
-                      .tableScan(inputRowType)
-                      .projectExpressions(projections)
-                      .partialAggregation(groupingKeys, aggregates, masks)
-                      .localPartition(groupingKeys)
-                      .finalAggregation()
-                      .planNode());
+  plans.push_back(
+      PlanBuilder()
+          .tableScan(inputRowType)
+          .projectExpressions(projections)
+          .partialAggregation(groupingKeys, aggregates, masks)
+          .localPartition(groupingKeys)
+          .finalAggregation()
+          .planNode());
 
   // Partial -> intermediate -> final aggregation plan.
-  plans.push_back(PlanBuilder()
-                      .tableScan(inputRowType)
-                      .projectExpressions(projections)
-                      .partialAggregation(groupingKeys, aggregates, masks)
-                      .localPartition(groupingKeys)
-                      .intermediateAggregation()
-                      .finalAggregation()
-                      .planNode());
+  plans.push_back(
+      PlanBuilder()
+          .tableScan(inputRowType)
+          .projectExpressions(projections)
+          .partialAggregation(groupingKeys, aggregates, masks)
+          .localPartition(groupingKeys)
+          .intermediateAggregation()
+          .finalAggregation()
+          .planNode());
 #endif
 }
 
@@ -581,17 +582,18 @@ void makeStreamingPlansWithValues(
     const std::vector<core::ExprPtr>& projections,
     std::vector<core::PlanNodePtr>& plans) {
   // Single aggregation.
-  plans.push_back(PlanBuilder()
-                      .values(inputVectors)
-                      .projectExpressions(projections)
-                      .orderBy(groupingKeys, false)
-                      .streamingAggregation(
-                          groupingKeys,
-                          aggregates,
-                          masks,
-                          core::AggregationNode::Step::kSingle,
-                          false)
-                      .planNode());
+  plans.push_back(
+      PlanBuilder()
+          .values(inputVectors)
+          .projectExpressions(projections)
+          .orderBy(groupingKeys, false)
+          .streamingAggregation(
+              groupingKeys,
+              aggregates,
+              masks,
+              core::AggregationNode::Step::kSingle,
+              false)
+          .planNode());
 
   // Partial -> final aggregation plan.
   plans.push_back(
@@ -646,17 +648,18 @@ void makeStreamingPlansWithTableScan(
     const std::vector<core::ExprPtr>& projections,
     std::vector<core::PlanNodePtr>& plans) {
   // Single aggregation.
-  plans.push_back(PlanBuilder()
-                      .tableScan(inputRowType)
-                      .projectExpressions(projections)
-                      .orderBy(groupingKeys, false)
-                      .streamingAggregation(
-                          groupingKeys,
-                          aggregates,
-                          masks,
-                          core::AggregationNode::Step::kSingle,
-                          false)
-                      .planNode());
+  plans.push_back(
+      PlanBuilder()
+          .tableScan(inputRowType)
+          .projectExpressions(projections)
+          .orderBy(groupingKeys, false)
+          .streamingAggregation(
+              groupingKeys,
+              aggregates,
+              masks,
+              core::AggregationNode::Step::kSingle,
+              false)
+          .planNode());
 
   // Partial -> final aggregation plan.
   plans.push_back(
@@ -891,7 +894,7 @@ bool AggregationFuzzer::verifySortedAggregation(
 
   if (customVerification &&
       (!aggregateOrderSensitive || customVerifier == nullptr ||
-       customVerifier->supportsVerify())) {
+       customVerifier->supportsVerify() || customVerifier->supportsCompare())) {
     // We have custom verification enabled and:
     // 1) the aggregate function is not order sensitive (sorting the input won't
     //    have an effect on the output) or
@@ -899,13 +902,12 @@ bool AggregationFuzzer::verifySortedAggregation(
     //    verification of this aggregation) or
     // 3) the custom verifier supports verification (it can't compare the
     //    results of the aggregation with the reference DB)
+    // 4) the custom verifier supports compare.
     // keep the custom verifier enabled.
     return compareEquivalentPlanResults(
         plans, customVerification, input, customVerifier, 1);
   } else {
-    // If custom verification is not enabled or the custom verifier is used for
-    // compare and the aggregation is order sensitive (the result shoudl be
-    // deterministic if the input is sorted), then compare the results directly.
+    // If custom verification is not enabled, then compare the results directly.
     return compareEquivalentPlanResults(plans, false, input, nullptr, 1);
   }
 }
@@ -1059,7 +1061,8 @@ bool AggregationFuzzer::compareEquivalentPlanResults(
                   expectedResult.value(),
                   firstPlan->outputType(),
                   {resultOrError.result}),
-              "Velox and reference DB results don't match");
+              "Velox and reference DB results don't match, plan: {}",
+              firstPlan->toString(true, true));
           LOG(INFO) << "Verified results against reference DB";
         }
       } else if (referenceQueryRunner_->supportsVeloxVectorResults()) {

@@ -15,10 +15,13 @@ include_guard(GLOBAL)
 
 # Version you want to build
 set(VELOX_GSL_BUILD_VERSION 4.0.0)
-set(VELOX_GSL_BUILD_SHA256_CHECKSUM
-    f0e32cb10654fea91ad56bde89170d78cfbf4363ee0b01d8f097de2ba49f6ce9)
-set(VELOX_GSL_SOURCE_URL
-    "https://github.com/microsoft/GSL/archive/refs/tags/v${VELOX_GSL_BUILD_VERSION}.tar.gz"
+set(
+  VELOX_GSL_BUILD_SHA256_CHECKSUM
+  f0e32cb10654fea91ad56bde89170d78cfbf4363ee0b01d8f097de2ba49f6ce9
+)
+set(
+  VELOX_GSL_SOURCE_URL
+  "https://github.com/microsoft/GSL/archive/refs/tags/v${VELOX_GSL_BUILD_VERSION}.tar.gz"
 )
 
 velox_resolve_dependency_url(GSL)
@@ -29,6 +32,9 @@ FetchContent_Declare(
   Microsoft.GSL
   URL ${VELOX_GSL_SOURCE_URL}
   URL_HASH ${VELOX_GSL_BUILD_SHA256_CHECKSUM}
-  OVERRIDE_FIND_PACKAGE EXCLUDE_FROM_ALL SYSTEM)
+  OVERRIDE_FIND_PACKAGE
+  EXCLUDE_FROM_ALL
+  SYSTEM
+)
 
 FetchContent_MakeAvailable(Microsoft.GSL)

@@ -14,14 +14,17 @@
 project(Folly)
 cmake_minimum_required(VERSION 3.28)
 
-velox_set_source(fastfloat)
-velox_resolve_dependency(fastfloat CONFIG REQUIRED)
+velox_set_source(FastFloat)
+velox_resolve_dependency(FastFloat CONFIG REQUIRED)
 
 set(VELOX_FOLLY_BUILD_VERSION v2025.04.28.00)
-set(VELOX_FOLLY_BUILD_SHA256_CHECKSUM
-    ccbb7eac662023f9f5beba94e51350d527f33d8a7a036eb5e3d8a5cf1b49d3bc)
-set(VELOX_FOLLY_SOURCE_URL
-    "https://github.com/facebook/folly/releases/download/${VELOX_FOLLY_BUILD_VERSION}/folly-${VELOX_FOLLY_BUILD_VERSION}.tar.gz"
+set(
+  VELOX_FOLLY_BUILD_SHA256_CHECKSUM
+  ccbb7eac662023f9f5beba94e51350d527f33d8a7a036eb5e3d8a5cf1b49d3bc
+)
+set(
+  VELOX_FOLLY_SOURCE_URL
+  "https://github.com/facebook/folly/releases/download/${VELOX_FOLLY_BUILD_VERSION}/folly-${VELOX_FOLLY_BUILD_VERSION}.tar.gz"
 )
 
 velox_resolve_dependency_url(FOLLY)
@@ -41,8 +44,11 @@ FetchContent_Declare(
   folly
   URL ${VELOX_FOLLY_SOURCE_URL}
   URL_HASH ${VELOX_FOLLY_BUILD_SHA256_CHECKSUM}
-  PATCH_COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/folly-no-export.patch
-                ${glog_patch} OVERRIDE_FIND_PACKAGE SYSTEM EXCLUDE_FROM_ALL)
+  PATCH_COMMAND git apply ${CMAKE_CURRENT_LIST_DIR}/folly-no-export.patch ${glog_patch}
+  OVERRIDE_FIND_PACKAGE
+  SYSTEM
+  EXCLUDE_FROM_ALL
+)
 
 set(BUILD_SHARED_LIBS ${VELOX_BUILD_SHARED})
 

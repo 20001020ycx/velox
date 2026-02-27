@@ -28,17 +28,16 @@
 
 #include <vector>
 
-namespace facebook {
-namespace velox {
+namespace facebook::velox {
 namespace dwio::common {
 class ColumnStatistics;
 }
 namespace common {
 
-// Describes the filtering and value extraction for a
-// SelectiveColumnReader. This is owned by the TableScan Operator and
-// is passed to SelectiveColumnReaders at construction.  This is
-// mutable by readers to reflect filter order and other adaptation.
+/// Describes the filtering and value extraction for a
+/// SelectiveColumnReader. This is owned by the TableScan Operator and
+/// is passed to SelectiveColumnReaders at construction.  This is
+/// mutable by readers to reflect filter order and other adaptations.
 class ScanSpec {
  public:
   enum class ColumnType : int8_t {
@@ -47,6 +46,9 @@ class ScanSpec {
     kComposite, // A struct with all children not read from file
   };
 
+  /// Convert ColumnType to its string name representation.
+  static std::string_view columnTypeString(ColumnType columnType);
+
   static constexpr column_index_t kNoChannel = ~0;
   static constexpr const char* kMapKeysFieldName = "keys";
   static constexpr const char* kMapValuesFieldName = "values";
@@ -54,20 +56,18 @@ class ScanSpec {
 
   explicit ScanSpec(const std::string& name) : fieldName_(name) {}
 
-  // Filter to apply. If 'this' corresponds to a struct/list/map, this
-  // can only be isNull or isNotNull, other filtering is given by
-  // 'children'.
-  common::Filter* filter() const {
+  /// Filter to apply. If 'this' corresponds to a struct/list/map, this
+  /// can only be isNull or isNotNull, other filtering is given by
+  /// 'children'.
+  const common::Filter* filter() const {
     return filterDisabled_ ? nullptr : filter_.get();
   }
 
   // Sets 'filter_'. May be used at initialization or when adding a
   // pushed down filter, e.g. top k cutoff.
-  void setFilter(std::unique_ptr<Filter> filter) {
+  void setFilter(std::shared_ptr<Filter> filter) {
     filter_ = std::move(filter);
   }
-
-  void addFilter(const Filter&);
 
   void setMaxArrayElementsCount(vector_size_t count) {
     maxArrayElementsCount_ = count;
@@ -148,7 +148,9 @@ class ScanSpec {
   }
 
   void setSubscript(int64_t subscript) {
-    subscript_ = subscript;
+    if (subscript_ != subscript) {
+      subscript_ = subscript;
+    }
   }
 
   // True if the value is returned from scan.  A runtime pushdown of a filter
@@ -165,8 +167,8 @@ class ScanSpec {
     return projectOut_ || deltaUpdate_;
   }
 
-  // Position in the RowVector returned by the top level scan. Applies
-  // only to children of the root struct where projectOut_ is true.
+  /// Position in the RowVector returned by the top level scan. Applies
+  /// only to children of the root struct where projectOut_ is true.
   column_index_t channel() const {
     return channel_;
   }
@@ -357,10 +359,17 @@ class ScanSpec {
     }
   }
 
-  /// Apply filter to the input `vector' and set the passed bits in `result'.
+  /// Apply filter to the first `size' rows of input `vector' and set the passed
+  /// bits in `result'.  `size' is usually the size of top most RowVector, since
+  /// the child could be larger in some suboptimal/corrupted cases and we do not
+  /// want to crash the process for it.
+  ///
   /// This method is used by non-selective reader and delta update, so it
   /// ignores the filterDisabled_ state.
-  void applyFilter(const BaseVector& vector, uint64_t* result) const;
+  void applyFilter(
+      const BaseVector& vector,
+      vector_size_t size,
+      uint64_t* result) const;
 
   bool isFlatMapAsStruct() const {
     return isFlatMapAsStruct_;
@@ -399,30 +408,30 @@ class ScanSpec {
   // Number of times read is called on the corresponding reader. This
   // is used for setup on first use and to produce a read sequence
   // number for LazyVectors.
-  uint64_t numReads_ = 0;
+  uint64_t numReads_{0};
 
   // Ordinal position of 'this' in its containing spec. For a struct
   // member this is the position of the reader in the child
   // readers. If this describes an operation on an array element or a
   // map with numeric key, this is the subscript as defined for array
   // or map.
-  int64_t subscript_ = -1;
+  int64_t subscript_{-1};
   // Column name if this is a struct mamber. String key if this
   // describes an operation on a map value.
   std::string fieldName_;
   // Ordinal position of the extracted value in the containing
   // RowVector. Set only when this describes a struct member.
-  column_index_t channel_ = kNoChannel;
+  column_index_t channel_{kNoChannel};
 
   VectorPtr constantValue_;
-  bool projectOut_ = false;
+  bool projectOut_{false};
 
-  ColumnType columnType_ = ColumnType::kRegular;
+  ColumnType columnType_{ColumnType::kRegular};
 
   // True if a string dictionary or flat map in this field should be
   // returned as flat.
-  bool makeFlat_ = false;
-  std::unique_ptr<common::Filter> filter_;
+  bool makeFlat_{false};
+  std::shared_ptr<const common::Filter> filter_;
   bool filterDisabled_ = false;
   dwio::common::DeltaColumnUpdater* deltaUpdate_ = nullptr;
 
@@ -437,6 +446,7 @@ class ScanSpec {
   SelectivityInfo selectivity_;
 
   std::vector<std::shared_ptr<ScanSpec>> children_;
+
   // Read-only copy of children, not subject to reordering. Used when
   // asynchronously constructing reader trees for read-ahead, while
   // 'children_' is reorderable by a running scan.
@@ -495,11 +505,21 @@ void ScanSpec::visit(const Type& type, F&& f) {
 // Returns false if no value from a range defined by stats can pass the
 // filter. True, otherwise.
 bool testFilter(
-    common::Filter* filter,
+    const common::Filter* filter,
     dwio::common::ColumnStatistics* stats,
     uint64_t totalRows,
     const TypePtr& type);
 
 } // namespace common
-} // namespace velox
-} // namespace facebook
+} // namespace facebook::velox
+
+template <>
+struct fmt::formatter<facebook::velox::common::ScanSpec::ColumnType>
+    : formatter<std::string_view> {
+  auto format(
+      facebook::velox::common::ScanSpec::ColumnType columnType,
+      format_context& ctx) const {
+    return formatter<std::string_view>::format(
+        facebook::velox::common::ScanSpec::columnTypeString(columnType), ctx);
+  }
+};

@@ -15,3 +15,7 @@ rules:
   use-trusted-publishing:
     ignore:
       - build_pyvelox.yml
+
+  unpinned-images:
+    ignore:
+      - linux-build-base.yml

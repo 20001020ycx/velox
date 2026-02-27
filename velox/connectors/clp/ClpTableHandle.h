@@ -25,6 +25,10 @@ class ClpTableHandle : public ConnectorTableHandle {
   ClpTableHandle(const std::string& connectorId, const std::string& tableName)
       : ConnectorTableHandle(connectorId), tableName_(tableName) {}
 
+  const std::string& name() const override {
+    return tableName_;
+  }
+
   [[nodiscard]] const std::string& tableName() const {
     return tableName_;
   }

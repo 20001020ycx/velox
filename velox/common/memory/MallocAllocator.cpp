@@ -15,6 +15,7 @@
  */
 
 #include "velox/common/memory/MallocAllocator.h"
+#include <folly/system/HardwareConcurrency.h>
 #include "velox/common/memory/Memory.h"
 
 #include <sys/mman.h>
@@ -33,7 +34,7 @@ MallocAllocator::MallocAllocator(size_t capacity, uint32_t reservationByteLimit)
             decrementUsageWithReservationFunc(counter, decrement, lock);
             return true;
           }),
-      reservations_(std::thread::hardware_concurrency()) {}
+      reservations_(folly::hardware_concurrency()) {}
 
 MallocAllocator::~MallocAllocator() {
   // TODO: Remove the check when memory leak issue is resolved.
@@ -58,9 +59,10 @@ bool MallocAllocator::allocateNonContiguousWithoutRetry(
       !incrementUsage(totalBytes)) {
     const auto errorMsg = fmt::format(
         "Exceeded memory allocator limit when allocating {} new pages"
-        ", the memory allocator capacity is {}",
+        ", the memory allocator capacity is {}, the allocated bytes is {}",
         sizeMix.totalPages,
-        succinctBytes(capacity_));
+        succinctBytes(capacity_),
+        succinctBytes(allocatedBytes_));
     VELOX_MEM_LOG_EVERY_MS(WARNING, 1000) << errorMsg;
     setAllocatorFailureMessage(errorMsg);
     return false;
@@ -150,6 +152,7 @@ bool MallocAllocator::allocateContiguousImpl(
     }
     numMapped_.fetch_sub(numContiguousCollateralPages);
     numAllocated_.fetch_sub(numContiguousCollateralPages);
+    numExternalMapped_.fetch_sub(numContiguousCollateralPages);
     decrementUsage(AllocationTraits::pageBytes(numContiguousCollateralPages));
     allocation.clear();
   }
@@ -171,6 +174,7 @@ bool MallocAllocator::allocateContiguousImpl(
   }
   numAllocated_.fetch_add(numPages);
   numMapped_.fetch_add(numPages);
+  numExternalMapped_.fetch_add(numPages);
   void* data = ::mmap(
       nullptr,
       AllocationTraits::pageBytes(maxPages),
@@ -228,6 +232,7 @@ void MallocAllocator::freeContiguousImpl(ContiguousAllocation& allocation) {
   }
   numMapped_.fetch_sub(numPages);
   numAllocated_.fetch_sub(numPages);
+  numExternalMapped_.fetch_sub(numPages);
   decrementUsage(bytes);
   allocation.clear();
 }
@@ -248,6 +253,7 @@ bool MallocAllocator::growContiguousWithoutRetry(
   }
   numAllocated_ += increment;
   numMapped_ += increment;
+  numExternalMapped_ += increment;
   allocation.set(
       allocation.data(),
       allocation.size() + AllocationTraits::kPageSize * increment,

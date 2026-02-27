@@ -1315,7 +1315,7 @@ int PlainBooleanDecoder::DecodeArrow(
       null_count,
       [&]() {
         bool value;
-        ARROW_IGNORE_EXPR(bit_reader_->GetValue(1, &value));
+        ((void)(bit_reader_->GetValue(1, &value)));
         builder->UnsafeAppend(value);
       },
       [&]() { builder->UnsafeAppendNull(); });
@@ -1378,8 +1378,9 @@ struct ArrowBinaryHelper<ByteArrayType> {
   Status Prepare(std::optional<int64_t> estimated_data_length = {}) {
     RETURN_NOT_OK(acc_->builder->Reserve(entries_remaining_));
     if (estimated_data_length.has_value()) {
-      RETURN_NOT_OK(acc_->builder->ReserveData(std::min<int64_t>(
-          *estimated_data_length, ::arrow::kBinaryMemoryLimit)));
+      RETURN_NOT_OK(acc_->builder->ReserveData(
+          std::min<int64_t>(
+              *estimated_data_length, ::arrow::kBinaryMemoryLimit)));
     }
     return Status::OK();
   }
@@ -1392,8 +1393,9 @@ struct ArrowBinaryHelper<ByteArrayType> {
       RETURN_NOT_OK(PushChunk());
       RETURN_NOT_OK(acc_->builder->Reserve(entries_remaining_));
       if (estimated_remaining_data_length.has_value()) {
-        RETURN_NOT_OK(acc_->builder->ReserveData(std::min<int64_t>(
-            *estimated_remaining_data_length, chunk_space_remaining_)));
+        RETURN_NOT_OK(acc_->builder->ReserveData(
+            std::min<int64_t>(
+                *estimated_remaining_data_length, chunk_space_remaining_)));
       }
     }
     return Status::OK();
@@ -1737,7 +1739,7 @@ class DictDecoderImpl : public DecoderImpl, virtual public DictDecoder<Type> {
     num_values_ = num_values;
     if (len == 0) {
       // Initialize dummy decoder to avoid crashes later on
-      idx_decoder_ = RleDecoder(data, len, /*bit_width=*/1);
+      idx_decoder_ = RleDecoder(data, len, /*bitWidth=*/1);
       return;
     }
     uint8_t bit_width = *data;
@@ -3330,13 +3332,14 @@ class RleBooleanEncoder final : public EncoderImpl,
         buffered_append_values_.push_back(boolean_array.Value(i));
       }
     } else {
-      PARQUET_THROW_NOT_OK(::arrow::VisitArraySpanInline<::arrow::BooleanType>(
-          *boolean_array.data(),
-          [&](bool value) {
-            buffered_append_values_.push_back(value);
-            return Status::OK();
-          },
-          []() { return Status::OK(); }));
+      PARQUET_THROW_NOT_OK(
+          ::arrow::VisitArraySpanInline<::arrow::BooleanType>(
+              *boolean_array.data(),
+              [&](bool value) {
+                buffered_append_values_.push_back(value);
+                return Status::OK();
+              },
+              []() { return Status::OK(); }));
     }
   }
 

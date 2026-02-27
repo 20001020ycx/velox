@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include "velox/common/memory/Memory.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/parquet/RegisterParquetReader.h"
 #include "velox/dwio/parquet/RegisterParquetWriter.h"
 #include "velox/exec/TableWriter.h"
@@ -33,13 +34,9 @@ class InsertTest : public velox::test::VectorTestBase {
   void SetUp(
       std::shared_ptr<const config::ConfigBase> hiveConfig,
       folly::Executor* ioExecutor) {
-    connector::registerConnectorFactory(
-        std::make_shared<connector::hive::HiveConnectorFactory>());
-    auto hiveConnector =
-        connector::getConnectorFactory(
-            connector::hive::HiveConnectorFactory::kHiveConnectorName)
-            ->newConnector(
-                exec::test::kHiveConnectorId, hiveConfig, ioExecutor);
+    connector::hive::HiveConnectorFactory factory;
+    auto hiveConnector = factory.newConnector(
+        exec::test::kHiveConnectorId, hiveConfig, ioExecutor);
     connector::registerConnector(hiveConnector);
 
     parquet::registerParquetReaderFactory();
@@ -49,8 +46,7 @@ class InsertTest : public velox::test::VectorTestBase {
   void TearDown() {
     parquet::unregisterParquetReaderFactory();
     parquet::unregisterParquetWriterFactory();
-    connector::unregisterConnectorFactory(
-        connector::hive::HiveConnectorFactory::kHiveConnectorName);
+
     connector::unregisterConnector(exec::test::kHiveConnectorId);
   }
 

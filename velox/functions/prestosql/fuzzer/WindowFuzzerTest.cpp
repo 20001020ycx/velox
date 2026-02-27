@@ -27,6 +27,11 @@
 #include "velox/functions/prestosql/fuzzer/ApproxPercentileResultVerifier.h"
 #include "velox/functions/prestosql/fuzzer/AverageResultVerifier.h"
 #include "velox/functions/prestosql/fuzzer/MinMaxInputGenerator.h"
+#include "velox/functions/prestosql/fuzzer/NumericHistogramInputGenerator.h"
+#include "velox/functions/prestosql/fuzzer/QDigestAggInputGenerator.h"
+#include "velox/functions/prestosql/fuzzer/QDigestAggResultVerifier.h"
+#include "velox/functions/prestosql/fuzzer/TDigestAggregateInputGenerator.h"
+#include "velox/functions/prestosql/fuzzer/TDigestAggregateResultVerifier.h"
 #include "velox/functions/prestosql/fuzzer/WindowOffsetInputGenerator.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 #include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
@@ -73,10 +78,14 @@ getCustomInputGenerators() {
       {"approx_distinct", std::make_shared<ApproxDistinctInputGenerator>()},
       {"approx_set", std::make_shared<ApproxDistinctInputGenerator>()},
       {"approx_percentile", std::make_shared<ApproxPercentileInputGenerator>()},
+      {"tdigest_agg", std::make_shared<TDigestAggregateInputGenerator>()},
+      {"qdigest_agg", std::make_shared<QDigestAggInputGenerator>()},
       {"lead", std::make_shared<WindowOffsetInputGenerator>(1)},
       {"lag", std::make_shared<WindowOffsetInputGenerator>(1)},
       {"nth_value", std::make_shared<WindowOffsetInputGenerator>(1)},
-      {"ntile", std::make_shared<WindowOffsetInputGenerator>(0)}};
+      {"ntile", std::make_shared<WindowOffsetInputGenerator>(0)},
+      {"numeric_histogram", std::make_shared<NumericHistogramInputGenerator>()},
+  };
 }
 
 } // namespace
@@ -101,7 +110,7 @@ int main(int argc, char** argv) {
   size_t initialSeed = FLAGS_seed == 0 ? std::time(nullptr) : FLAGS_seed;
 
   // List of functions that have known bugs that cause crashes or failures.
-  static const std::unordered_set<std::string> skipFunctions = {
+  std::unordered_set<std::string> skipFunctions = {
       // https://github.com/prestodb/presto/issues/24936
       "classification_fall_out",
       "classification_precision",
@@ -117,11 +126,44 @@ int main(int argc, char** argv) {
       "reduce_agg",
       // array_agg requires a flag controlling whether to ignore nulls.
       "array_agg",
-      // min_by and max_by are fixed recently, requiring Presto-0.286.
-      // https://github.com/prestodb/presto/pull/21793
-      "min_by",
-      "max_by",
+      // Skip non-deterministic functions.
+      "noisy_avg_gaussian",
+      "noisy_count_if_gaussian",
+      "noisy_count_gaussian",
+      "noisy_sum_gaussian",
+      "noisy_approx_set_sfm",
+      "noisy_approx_distinct_sfm",
+      "noisy_approx_set_sfm_from_index_and_zeros",
+      "reservoir_sample",
+      // https://github.com/facebookincubator/velox/issues/13547
+      "merge",
+      // https://github.com/facebookincubator/velox/issues/14423
+      "numeric_histogram",
+      // Come back to SetDigest and KHLL aggregate functions.
+      "make_set_digest",
+      "merge_set_digest",
+      "khyperloglog_agg", // TODO: Remove from skip list once the KHLL result
+      // verifier is added.
+      "convex_hull_agg",
+      "geometry_union_agg",
+      "geometry_union_agg_partial",
+      "geometry_union_agg_merge",
+      "geometry_union_agg_extract",
+      "geometry_union_agg_merge_extract",
+      "convex_hull_agg_partial",
+      "convex_hull_agg_merge",
+      "convex_hull_agg_extract",
+      "convex_hull_agg_merge_extract",
   };
+
+  if (!FLAGS_presto_url.empty()) {
+    skipFunctions.insert({
+        // min_by and max_by with 3 arguments produces results with different
+        // orders of elements from Presto.
+        "min_by",
+        "max_by",
+    });
+  }
 
   // Functions whose results verification should be skipped. These can be
   // functions that return complex-typed results containing floating-point
@@ -130,6 +172,8 @@ int main(int argc, char** argv) {
   using facebook::velox::exec::test::ApproxDistinctResultVerifier;
   using facebook::velox::exec::test::ApproxPercentileResultVerifier;
   using facebook::velox::exec::test::AverageResultVerifier;
+  using facebook::velox::exec::test::QDigestAggResultVerifier;
+  using facebook::velox::exec::test::TDigestAggregateResultVerifier;
 
   static const std::unordered_map<
       std::string,
@@ -141,6 +185,8 @@ int main(int argc, char** argv) {
           {"approx_percentile",
            std::make_shared<ApproxPercentileResultVerifier>()},
           {"approx_most_frequent", nullptr},
+          {"tdigest_agg", std::make_shared<TDigestAggregateResultVerifier>()},
+          {"qdigest_agg", std::make_shared<QDigestAggResultVerifier>()},
           {"merge", nullptr},
           // Semantically inconsistent functions
           {"skewness", nullptr},
@@ -177,6 +223,8 @@ int main(int argc, char** argv) {
       "max_by",
       "min_by",
       "multimap_agg",
+      "tdigest_agg",
+      "qdigest_agg",
   };
 
   using Runner = facebook::velox::exec::test::WindowFuzzerRunner;

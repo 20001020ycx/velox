@@ -77,6 +77,10 @@ class MallocAllocator : public MemoryAllocator {
     return numMapped_;
   }
 
+  MachinePageCount numExternalMapped() const override {
+    return numExternalMapped_;
+  }
+
   bool checkConsistency() const override;
 
   std::string toString() const override;
@@ -202,11 +206,12 @@ class MallocAllocator : public MemoryAllocator {
     if (originalBytes - bytes < 0) {
       // In case of inconsistency while freeing memory, do not revert in this
       // case because free is guaranteed to happen.
-      VELOX_MEM_ALLOC_ERROR(fmt::format(
-          "Trying to free {} bytes, which is larger than current allocated "
-          "bytes {}",
-          bytes,
-          originalBytes))
+      VELOX_MEM_ALLOC_ERROR(
+          fmt::format(
+              "Trying to free {} bytes, which is larger than current allocated "
+              "bytes {}",
+              bytes,
+              originalBytes))
     }
   }
 

@@ -17,14 +17,15 @@
 
 #include <assert.h>
 #include <fmt/format.h>
+#include <folly/CPortability.h>
+#include <folly/Likely.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
 #include <vector>
-#include "folly/CPortability.h"
-#include "folly/Likely.h"
+
 #include "velox/common/base/Exceptions.h"
 #include "velox/external/md5/md5.h"
 #include "velox/functions/lib/Utf8Utils.h"
@@ -35,7 +36,11 @@ namespace facebook::velox::functions::stringImpl {
 using namespace stringCore;
 
 /// Perform upper for a UTF8 string
-template <bool ascii, typename TOutString, typename TInString>
+template <
+    bool ascii,
+    bool turkishCasing = false,
+    typename TOutString,
+    typename TInString>
 FOLLY_ALWAYS_INLINE bool upper(TOutString& output, const TInString& input) {
   if constexpr (ascii) {
     output.resize(input.size());
@@ -50,18 +55,30 @@ FOLLY_ALWAYS_INLINE bool upper(TOutString& output, const TInString& input) {
 }
 
 /// Perform lower for a UTF8 string
-template <bool ascii, typename TOutString, typename TInString>
+template <
+    bool ascii,
+    bool turkishCasing = false,
+    bool greekFinalSigma = false,
+    typename TOutString,
+    typename TInString>
 FOLLY_ALWAYS_INLINE bool lower(TOutString& output, const TInString& input) {
   if constexpr (ascii) {
     output.resize(input.size());
     lowerAscii(output.data(), input.data(), input.size());
   } else {
     output.resize(input.size() * 4);
-    auto size =
-        lowerUnicode(output.data(), output.size(), input.data(), input.size());
+    auto size = lowerUnicode<turkishCasing, greekFinalSigma>(
+        output.data(), output.size(), input.data(), input.size());
     output.resize(size);
   }
   return true;
+}
+
+// Return the lower-case string of a UTF8 string.
+FOLLY_ALWAYS_INLINE std::string utf8StrToLowerCopy(const std::string& str) {
+  std::string lowerStr;
+  functions::stringImpl::lower<false>(lowerStr, str);
+  return lowerStr;
 }
 
 /// Apply a set of appenders on an output string, an appender is a lambda
@@ -120,23 +137,21 @@ cappedByteLength(const TString& input, size_t maxCharacters) {
   }
 }
 
-/// Write the Unicode codePoint as string to the output string. The function
+/// Write the Unicode codePoint as string to an output StringView. The function
 /// behavior is undefined when code point it invalid. Implements the logic of
 /// presto chr function.
-template <typename TOutString>
-FOLLY_ALWAYS_INLINE void codePointToString(
-    TOutString& output,
-    const int64_t codePoint) {
+///
+/// Returns an StringView with an inlined buffer (since the maximum string size
+/// is only 4 bytes).
+FOLLY_ALWAYS_INLINE StringView codePointToString(const int64_t codePoint) {
   auto validCodePoint =
       codePoint <= INT32_MAX && utf8proc_codepoint_valid(codePoint);
   VELOX_USER_CHECK(
       validCodePoint, "Not a valid Unicode code point: {}", codePoint);
 
-  output.reserve(4);
-  auto size = utf8proc_encode_char(
-      codePoint, reinterpret_cast<unsigned char*>(output.data()));
-
-  output.resize(size);
+  unsigned char output[4];
+  auto size = utf8proc_encode_char(codePoint, output);
+  return StringView((const char*)output, size);
 }
 
 /// Returns the Unicode code point of the first char in a single char input
@@ -671,6 +686,132 @@ FOLLY_ALWAYS_INLINE void pad(
       output.data() + paddingOffset + fullPadCopies * padString.size(),
       padString.data(),
       padPrefixByteLength);
+}
+
+namespace detail {
+
+template <bool strictSpace>
+inline bool isSpaceAscii(unsigned char ch) {
+  if constexpr (strictSpace) {
+    return ch == ' ';
+  } else {
+    return std::isspace(ch);
+  }
+}
+
+template <bool strictSpace>
+inline bool isSpaceUtf8(utf8proc_int32_t cp) {
+  if constexpr (strictSpace) {
+    return cp == 0x20;
+  } else {
+    return isUnicodeWhiteSpace(cp);
+  }
+}
+
+template <bool strictSpace, typename TOutString, typename TInString>
+FOLLY_ALWAYS_INLINE void initcapAsciiImpl(
+    TOutString& output,
+    const TInString& input) {
+  output.resize(input.size());
+  const char* inputChars = input.data();
+  char* outputChars = output.data();
+
+  bool isStartOfWord = true;
+  for (size_t i = 0; i < input.size(); ++i) {
+    unsigned char currentChar = static_cast<unsigned char>(inputChars[i]);
+
+    if (isSpaceAscii<strictSpace>(currentChar)) {
+      isStartOfWord = true;
+      outputChars[i] = currentChar;
+    } else if (isStartOfWord) {
+      outputChars[i] = std::toupper(currentChar);
+      isStartOfWord = false;
+    } else {
+      outputChars[i] = std::tolower(currentChar);
+    }
+  }
+}
+
+template <
+    bool strictSpace,
+    bool turkishCasing,
+    bool greekFinalSigma,
+    typename TOutString,
+    typename TInString>
+FOLLY_ALWAYS_INLINE bool initcapUtf8Impl(
+    TOutString& output,
+    const TInString& input) {
+  const char* inputBytes = input.data();
+  const char* inputEnd = inputBytes + input.size();
+
+  output.resize(input.size() * 4);
+  char* outputStart = output.data();
+  char* outputBytes = outputStart;
+
+  bool isStartOfWord = true;
+
+  while (inputBytes < inputEnd) {
+    utf8proc_int32_t originalCodepoint;
+    auto numBytesRead = utf8proc_iterate(
+        reinterpret_cast<const uint8_t*>(inputBytes),
+        inputEnd - inputBytes,
+        &originalCodepoint);
+    if (numBytesRead < 0) {
+      return false;
+    }
+
+    if (isSpaceUtf8<strictSpace>(originalCodepoint)) {
+      isStartOfWord = true;
+      // Copy delimiter as is.
+      std::memcpy(outputBytes, inputBytes, numBytesRead);
+      outputBytes += numBytesRead;
+    } else if (isStartOfWord) {
+      auto upperSize = upperUnicode(
+          outputBytes,
+          static_cast<size_t>(outputStart + output.size() - outputBytes),
+          inputBytes,
+          numBytesRead);
+      outputBytes += upperSize;
+      isStartOfWord = false;
+    } else {
+      auto lowerSize = lowerUnicode<turkishCasing, greekFinalSigma>(
+          outputBytes,
+          static_cast<size_t>(outputStart + output.size() - outputBytes),
+          inputBytes,
+          numBytesRead);
+      outputBytes += lowerSize;
+    }
+    inputBytes += numBytesRead;
+  }
+
+  output.resize(outputBytes - outputStart);
+  return true;
+}
+
+} // namespace detail
+
+/// Converts the first character of each word to uppercase and all other
+/// characters in the word to lowercase. Words are separated by whitespace.
+/// @tparam strictSpace If true, only ASCII space is considered as word
+/// separators. If false, other ASCII or Unicode whitespace characters are also
+/// considered as word separators.
+/// @tparam turkishCasing If true, handles special Turkish case during
+/// the unicode lower-casing.
+template <
+    bool strictSpace,
+    bool isAscii,
+    bool turkishCasing,
+    bool greekFinalSigma,
+    typename TOutString,
+    typename TInString>
+FOLLY_ALWAYS_INLINE bool initcap(TOutString& output, const TInString& input) {
+  if constexpr (isAscii) {
+    detail::initcapAsciiImpl<strictSpace>(output, input);
+    return true;
+  } else {
+    return detail::initcapUtf8Impl<strictSpace, turkishCasing, greekFinalSigma>(
+        output, input);
+  }
 }
 
 } // namespace facebook::velox::functions::stringImpl

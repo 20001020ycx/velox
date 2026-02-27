@@ -31,9 +31,10 @@ TaskTraceMetadataReader::TaskTraceMetadataReader(
       traceFilePath_(getTaskTraceMetaFilePath(traceDir_)),
       pool_(pool),
       metadataObj_(getTaskMetadata(traceFilePath_, fs_)),
-      tracePlanNode_(ISerializable::deserialize<core::PlanNode>(
-          metadataObj_[TraceTraits::kPlanNodeKey],
-          pool_)) {}
+      tracePlanNode_(
+          ISerializable::deserialize<core::PlanNode>(
+              metadataObj_[TraceTraits::kPlanNodeKey],
+              pool_)) {}
 
 std::unordered_map<std::string, std::string>
 TaskTraceMetadataReader::queryConfigs() const {
@@ -66,22 +67,41 @@ core::PlanNodePtr TaskTraceMetadataReader::queryPlan() const {
 }
 
 std::string TaskTraceMetadataReader::nodeName(const std::string& nodeId) const {
-  const auto* traceNode = core::PlanNode::findFirstNode(
-      tracePlanNode_.get(),
-      [&nodeId](const core::PlanNode* node) { return node->id() == nodeId; });
+  LOG(ERROR) << "node id " << nodeId << " trace plan node "
+             << tracePlanNode_->toString(true, true);
+  const auto* traceNode =
+      core::PlanNode::findNodeById(tracePlanNode_.get(), nodeId);
+  VELOX_CHECK_NOT_NULL(
+      traceNode, "trace node id {} not found in the trace plan", nodeId);
   return std::string(traceNode->name());
 }
 
-std::string TaskTraceMetadataReader::connectorId(
+std::optional<std::string> TaskTraceMetadataReader::connectorId(
     const std::string& nodeId) const {
-  const auto* traceNode = core::PlanNode::findFirstNode(
-      tracePlanNode_.get(),
-      [&nodeId](const core::PlanNode* node) { return node->id() == nodeId; });
-  const auto* tableScanNode =
-      dynamic_cast<const core::TableScanNode*>(traceNode);
-  VELOX_CHECK_NOT_NULL(tableScanNode);
-  const auto connectorId = tableScanNode->tableHandle()->connectorId();
-  VELOX_CHECK(!connectorId.empty());
-  return connectorId;
+  const auto* traceNode =
+      core::PlanNode::findNodeById(tracePlanNode_.get(), nodeId);
+  VELOX_CHECK_NOT_NULL(
+      traceNode,
+      "trace node id {} not found in the trace plan: {}",
+      nodeId,
+      tracePlanNode_->toString(true, true));
+
+  if (const auto* indexLookupJoinNode =
+          dynamic_cast<const core::IndexLookupJoinNode*>(traceNode)) {
+    const auto indexLookupConnectorId =
+        indexLookupJoinNode->lookupSource()->tableHandle()->connectorId();
+    VELOX_CHECK(!indexLookupConnectorId.empty());
+    return indexLookupConnectorId;
+  }
+
+  if (const auto* tableScanNode =
+          dynamic_cast<const core::TableScanNode*>(traceNode)) {
+    VELOX_CHECK_NOT_NULL(tableScanNode);
+    const auto connectorId = tableScanNode->tableHandle()->connectorId();
+    VELOX_CHECK(!connectorId.empty());
+    return connectorId;
+  }
+
+  return std::nullopt;
 }
 } // namespace facebook::velox::exec::trace

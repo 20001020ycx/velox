@@ -45,22 +45,18 @@ class ClpConnectorTest : public exec::test::OperatorTestBase {
 
   void SetUp() override {
     OperatorTestBase::SetUp();
-    connector::registerConnectorFactory(
-        std::make_shared<connector::clp::ClpConnectorFactory>());
-    auto clpConnector =
-        connector::getConnectorFactory(
-            connector::clp::ClpConnectorFactory::kClpConnectorName)
-            ->newConnector(
-                kClpConnectorId,
-                std::make_shared<config::ConfigBase>(
-                    std::unordered_map<std::string, std::string>{}));
+    connector::clp::ClpConnectorFactory factory;
+    auto clpConnector = factory.newConnector(
+        kClpConnectorId,
+        std::make_shared<const config::ConfigBase>(
+            std::unordered_map<std::string, std::string>{}),
+        nullptr,
+        nullptr);
     connector::registerConnector(clpConnector);
   }
 
   void TearDown() override {
     connector::unregisterConnector(kClpConnectorId);
-    connector::unregisterConnectorFactory(
-        connector::clp::ClpConnectorFactory::kClpConnectorName);
     OperatorTestBase::TearDown();
   }
 
@@ -94,27 +90,28 @@ class ClpConnectorTest : public exec::test::OperatorTestBase {
 
 TEST_F(ClpConnectorTest, test1NoPushdown) {
   const std::shared_ptr<std::string> kqlQuery = nullptr;
-  auto plan = PlanBuilder()
-                  .startTableScan()
-                  .outputType(
-                      ROW({"requestId", "userId", "method"},
-                          {VARCHAR(), VARCHAR(), VARCHAR()}))
-                  .tableHandle(std::make_shared<ClpTableHandle>(
-                      kClpConnectorId, "test_1"))
-                  .assignments({
-                      {"requestId",
-                       std::make_shared<ClpColumnHandle>(
-                           "requestId", "requestId", VARCHAR())},
-                      {"userId",
-                       std::make_shared<ClpColumnHandle>(
-                           "userId", "userId", VARCHAR())},
-                      {"method",
-                       std::make_shared<ClpColumnHandle>(
-                           "method", "method", VARCHAR())},
-                  })
-                  .endTableScan()
-                  .filter("method = 'GET'")
-                  .planNode();
+  auto plan =
+      PlanBuilder()
+          .startTableScan()
+          .outputType(
+              ROW({"requestId", "userId", "method"},
+                  {VARCHAR(), VARCHAR(), VARCHAR()}))
+          .tableHandle(
+              std::make_shared<ClpTableHandle>(kClpConnectorId, "test_1"))
+          .assignments({
+              {"requestId",
+               std::make_shared<ClpColumnHandle>(
+                   "requestId", "requestId", VARCHAR())},
+              {"userId",
+               std::make_shared<ClpColumnHandle>(
+                   "userId", "userId", VARCHAR())},
+              {"method",
+               std::make_shared<ClpColumnHandle>(
+                   "method", "method", VARCHAR())},
+          })
+          .endTableScan()
+          .filter("method = 'GET'")
+          .planNode();
 
   auto output = getResults(
       plan,
@@ -195,13 +192,13 @@ TEST_F(ClpConnectorTest, test1Pushdown) {
           getExampleFilePath("test_1.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected =
-      makeRowVector({// requestId
-                     makeFlatVector<StringView>({"req-106"}),
-                     // userId
-                     makeNullableFlatVector<StringView>({std::nullopt}),
-                     // path
-                     makeFlatVector<StringView>({"/auth/login"})});
+  auto expected = makeRowVector(
+      {// requestId
+       makeFlatVector<StringView>({"req-106"}),
+       // userId
+       makeNullableFlatVector<StringView>({std::nullopt}),
+       // path
+       makeFlatVector<StringView>({"/auth/login"})});
   test::assertEqualVectors(expected, output);
 
   auto irOutput = getResults(
@@ -215,27 +212,28 @@ TEST_F(ClpConnectorTest, test1Pushdown) {
 
 TEST_F(ClpConnectorTest, test1JsonString) {
   const std::shared_ptr<std::string> kqlQuery = nullptr;
-  auto plan = PlanBuilder()
-                  .startTableScan()
-                  .outputType(
-                      ROW({"requestId", "__json_string", "method"},
-                          {VARCHAR(), VARCHAR(), VARCHAR()}))
-                  .tableHandle(std::make_shared<ClpTableHandle>(
-                      kClpConnectorId, "test_1"))
-                  .assignments({
-                      {"requestId",
-                       std::make_shared<ClpColumnHandle>(
-                           "requestId", "requestId", VARCHAR())},
-                      {"__json_string",
-                       std::make_shared<ClpColumnHandle>(
-                           "__json_string", "__json_string", VARCHAR())},
-                      {"method",
-                       std::make_shared<ClpColumnHandle>(
-                           "method", "method", VARCHAR())},
-                  })
-                  .endTableScan()
-                  .filter("method = 'GET'")
-                  .planNode();
+  auto plan =
+      PlanBuilder()
+          .startTableScan()
+          .outputType(
+              ROW({"requestId", "__json_string", "method"},
+                  {VARCHAR(), VARCHAR(), VARCHAR()}))
+          .tableHandle(
+              std::make_shared<ClpTableHandle>(kClpConnectorId, "test_1"))
+          .assignments({
+              {"requestId",
+               std::make_shared<ClpColumnHandle>(
+                   "requestId", "requestId", VARCHAR())},
+              {"__json_string",
+               std::make_shared<ClpColumnHandle>(
+                   "__json_string", "__json_string", VARCHAR())},
+              {"method",
+               std::make_shared<ClpColumnHandle>(
+                   "method", "method", VARCHAR())},
+          })
+          .endTableScan()
+          .filter("method = 'GET'")
+          .planNode();
 
   const auto methodVector = makeFlatVector<StringView>({
       "GET",
@@ -324,19 +322,19 @@ TEST_F(ClpConnectorTest, test2NoPushdown) {
           getExampleFilePath("test_2.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected =
-      makeRowVector({// timestamp
-                     makeFlatVector<Timestamp>({Timestamp(
-                         kTestTimestampSeconds, kTestTimestampNanoseconds)}),
-                     // event
-                     makeRowVector({
-                         // event.type
-                         makeFlatVector<StringView>({"storage"}),
-                         // event.subtype
-                         makeFlatVector<StringView>({"disk_usage"}),
-                         // event.severity
-                         makeFlatVector<StringView>({"WARNING"}),
-                     })});
+  auto expected = makeRowVector(
+      {// timestamp
+       makeFlatVector<Timestamp>(
+           {Timestamp(kTestTimestampSeconds, kTestTimestampNanoseconds)}),
+       // event
+       makeRowVector({
+           // event.type
+           makeFlatVector<StringView>({"storage"}),
+           // event.subtype
+           makeFlatVector<StringView>({"disk_usage"}),
+           // event.severity
+           makeFlatVector<StringView>({"WARNING"}),
+       })});
   test::assertEqualVectors(expected, output);
 
   auto irOutput = getResults(
@@ -353,27 +351,28 @@ TEST_F(ClpConnectorTest, test2Pushdown) {
       "(event.severity: \"WARNING\" OR event.severity: \"ERROR\") AND "
       "((event.type: \"network\" AND event.subtype: \"connection\") OR "
       "(event.type: \"storage\" AND event.subtype: \"disk*\"))");
-  auto plan = PlanBuilder()
-                  .startTableScan()
-                  .outputType(
-                      ROW({"timestamp", "event"},
-                          {TIMESTAMP(),
-                           ROW({"type", "subtype", "severity"},
-                               {VARCHAR(), VARCHAR(), VARCHAR()})}))
-                  .tableHandle(std::make_shared<ClpTableHandle>(
-                      kClpConnectorId, "test_2"))
-                  .assignments(
-                      {{"timestamp",
-                        std::make_shared<ClpColumnHandle>(
-                            "timestamp", "timestamp", TIMESTAMP())},
-                       {"event",
-                        std::make_shared<ClpColumnHandle>(
-                            "event",
-                            "event",
-                            ROW({"type", "subtype", "severity"},
-                                {VARCHAR(), VARCHAR(), VARCHAR()}))}})
-                  .endTableScan()
-                  .planNode();
+  auto plan =
+      PlanBuilder()
+          .startTableScan()
+          .outputType(
+              ROW({"timestamp", "event"},
+                  {TIMESTAMP(),
+                   ROW({"type", "subtype", "severity"},
+                       {VARCHAR(), VARCHAR(), VARCHAR()})}))
+          .tableHandle(
+              std::make_shared<ClpTableHandle>(kClpConnectorId, "test_2"))
+          .assignments(
+              {{"timestamp",
+                std::make_shared<ClpColumnHandle>(
+                    "timestamp", "timestamp", TIMESTAMP())},
+               {"event",
+                std::make_shared<ClpColumnHandle>(
+                    "event",
+                    "event",
+                    ROW({"type", "subtype", "severity"},
+                        {VARCHAR(), VARCHAR(), VARCHAR()}))}})
+          .endTableScan()
+          .planNode();
 
   auto output = getResults(
       plan,
@@ -381,19 +380,19 @@ TEST_F(ClpConnectorTest, test2Pushdown) {
           getExampleFilePath("test_2.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected =
-      makeRowVector({// timestamp
-                     makeFlatVector<Timestamp>({Timestamp(
-                         kTestTimestampSeconds, kTestTimestampNanoseconds)}),
-                     // event
-                     makeRowVector({
-                         // event.type
-                         makeFlatVector<StringView>({"storage"}),
-                         // event.subtype
-                         makeFlatVector<StringView>({"disk_usage"}),
-                         // event.severity
-                         makeFlatVector<StringView>({"WARNING"}),
-                     })});
+  auto expected = makeRowVector(
+      {// timestamp
+       makeFlatVector<Timestamp>(
+           {Timestamp(kTestTimestampSeconds, kTestTimestampNanoseconds)}),
+       // event
+       makeRowVector({
+           // event.type
+           makeFlatVector<StringView>({"storage"}),
+           // event.subtype
+           makeFlatVector<StringView>({"disk_usage"}),
+           // event.severity
+           makeFlatVector<StringView>({"WARNING"}),
+       })});
   test::assertEqualVectors(expected, output);
 
   auto irOutput = getResults(
@@ -444,15 +443,16 @@ TEST_F(ClpConnectorTest, test2Hybrid) {
        makeFlatVector<Timestamp>(
            {Timestamp(kTestTimestampSeconds, kTestTimestampNanoseconds)}),
        // event
-       makeRowVector({// event.type
-                      makeFlatVector<StringView>({"storage"}),
-                      // event.subtype
-                      makeFlatVector<StringView>({"disk_usage"}),
-                      // event.severity
-                      makeFlatVector<StringView>({"WARNING"}),
-                      // event.tags
-                      makeArrayVector<StringView>(
-                          {{"\"filesystem\"", "\"monitoring\""}})})
+       makeRowVector(
+           {// event.type
+            makeFlatVector<StringView>({"storage"}),
+            // event.subtype
+            makeFlatVector<StringView>({"disk_usage"}),
+            // event.severity
+            makeFlatVector<StringView>({"WARNING"}),
+            // event.tags
+            makeArrayVector<StringView>(
+                {{"\"filesystem\"", "\"monitoring\""}})})
 
       });
   test::assertEqualVectors(expected, output);
@@ -471,21 +471,22 @@ TEST_F(ClpConnectorTest, test2JsonString) {
       "(event.severity: \"WARNING\" OR event.severity: \"ERROR\") AND "
       "((event.type: \"network\" AND event.subtype: \"connection\") OR "
       "(event.type: \"storage\" AND event.subtype: \"disk*\"))");
-  auto plan = PlanBuilder()
-                  .startTableScan()
-                  .outputType(ROW(
-                      {"timestamp", "__json_string"}, {TIMESTAMP(), VARCHAR()}))
-                  .tableHandle(std::make_shared<ClpTableHandle>(
-                      kClpConnectorId, "test_2"))
-                  .assignments(
-                      {{"timestamp",
-                        std::make_shared<ClpColumnHandle>(
-                            "timestamp", "timestamp", TIMESTAMP())},
-                       {"__json_string",
-                        std::make_shared<ClpColumnHandle>(
-                            "__json_string", "__json_string", VARCHAR())}})
-                  .endTableScan()
-                  .planNode();
+  auto plan =
+      PlanBuilder()
+          .startTableScan()
+          .outputType(
+              ROW({"timestamp", "__json_string"}, {TIMESTAMP(), VARCHAR()}))
+          .tableHandle(
+              std::make_shared<ClpTableHandle>(kClpConnectorId, "test_2"))
+          .assignments(
+              {{"timestamp",
+                std::make_shared<ClpColumnHandle>(
+                    "timestamp", "timestamp", TIMESTAMP())},
+               {"__json_string",
+                std::make_shared<ClpColumnHandle>(
+                    "__json_string", "__json_string", VARCHAR())}})
+          .endTableScan()
+          .planNode();
 
   auto output = getResults(
       plan,
@@ -521,17 +522,18 @@ TEST_F(ClpConnectorTest, test2JsonString) {
 
 TEST_F(ClpConnectorTest, test3TimestampMarshalling) {
   const std::shared_ptr<std::string> kqlQuery = nullptr;
-  auto plan = PlanBuilder(pool_.get())
-                  .startTableScan()
-                  .outputType(ROW({"timestamp"}, {TIMESTAMP()}))
-                  .tableHandle(std::make_shared<ClpTableHandle>(
-                      kClpConnectorId, "test_3"))
-                  .assignments(
-                      {{"timestamp",
-                        std::make_shared<ClpColumnHandle>(
-                            "timestamp", "timestamp", TIMESTAMP())}})
-                  .endTableScan()
-                  .planNode();
+  auto plan =
+      PlanBuilder(pool_.get())
+          .startTableScan()
+          .outputType(ROW({"timestamp"}, {TIMESTAMP()}))
+          .tableHandle(
+              std::make_shared<ClpTableHandle>(kClpConnectorId, "test_3"))
+          .assignments(
+              {{"timestamp",
+                std::make_shared<ClpColumnHandle>(
+                    "timestamp", "timestamp", TIMESTAMP())}})
+          .endTableScan()
+          .planNode();
 
   auto output = getResults(
       plan,
@@ -552,18 +554,19 @@ TEST_F(ClpConnectorTest, test3TimestampMarshalling) {
 
 TEST_F(ClpConnectorTest, test4IrTimestampNoPushdown) {
   const std::shared_ptr<std::string> kqlQuery = nullptr;
-  auto plan = PlanBuilder(pool_.get())
-                  .startTableScan()
-                  .outputType(ROW({"timestamp"}, {TIMESTAMP()}))
-                  .tableHandle(std::make_shared<ClpTableHandle>(
-                      kClpConnectorId, "test_4"))
-                  .assignments(
-                      {{"timestamp",
-                        std::make_shared<ClpColumnHandle>(
-                            "timestamp", "timestamp", TIMESTAMP())}})
-                  .endTableScan()
-                  .filter("\"timestamp\" < timestamp '2025-08-24 02:36:45'")
-                  .planNode();
+  auto plan =
+      PlanBuilder(pool_.get())
+          .startTableScan()
+          .outputType(ROW({"timestamp"}, {TIMESTAMP()}))
+          .tableHandle(
+              std::make_shared<ClpTableHandle>(kClpConnectorId, "test_4"))
+          .assignments(
+              {{"timestamp",
+                std::make_shared<ClpColumnHandle>(
+                    "timestamp", "timestamp", TIMESTAMP())}})
+          .endTableScan()
+          .filter("\"timestamp\" < timestamp '2025-08-24 02:36:45'")
+          .planNode();
 
   auto output = getResults(
       plan,
@@ -584,17 +587,18 @@ TEST_F(ClpConnectorTest, test4IrTimestampPushdown) {
   // which is not supported yet so the value will be NULL.
   const std::shared_ptr<std::string> kqlQuery =
       std::make_shared<std::string>("(timestamp < 1756003005000000)");
-  auto plan = PlanBuilder(pool_.get())
-                  .startTableScan()
-                  .outputType(ROW({"timestamp"}, {TIMESTAMP()}))
-                  .tableHandle(std::make_shared<ClpTableHandle>(
-                      kClpConnectorId, "test_4"))
-                  .assignments(
-                      {{"timestamp",
-                        std::make_shared<ClpColumnHandle>(
-                            "timestamp", "timestamp", TIMESTAMP())}})
-                  .endTableScan()
-                  .planNode();
+  auto plan =
+      PlanBuilder(pool_.get())
+          .startTableScan()
+          .outputType(ROW({"timestamp"}, {TIMESTAMP()}))
+          .tableHandle(
+              std::make_shared<ClpTableHandle>(kClpConnectorId, "test_4"))
+          .assignments(
+              {{"timestamp",
+                std::make_shared<ClpColumnHandle>(
+                    "timestamp", "timestamp", TIMESTAMP())}})
+          .endTableScan()
+          .planNode();
 
   auto output = getResults(
       plan,
@@ -639,23 +643,24 @@ TEST_F(ClpConnectorTest, test5FloatTimestampNoPushdown) {
           getExampleFilePath("test_5.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected = makeRowVector({// timestamp
-                                 makeFlatVector<Timestamp>(
-                                     {Timestamp(1746003005, 124000000),
-                                      Timestamp(1746003005, 124100000),
-                                      Timestamp(1746003005, 125000000),
-                                      Timestamp(1746003005, 126000000),
-                                      Timestamp(1746003005, 127000000),
-                                      Timestamp(1746003060, 0),
-                                      Timestamp(1746003065, 0)}),
-                                 makeFlatVector<double>(
-                                     {1.2345678912345E9,
-                                      1E16,
-                                      1.234567891234567E9,
-                                      1.234567891234567E9,
-                                      -1.234567891234567E-9,
-                                      1234567891.234567,
-                                      -1234567891.234567})});
+  auto expected = makeRowVector(
+      {// timestamp
+       makeFlatVector<Timestamp>(
+           {Timestamp(1746003005, 124000000),
+            Timestamp(1746003005, 124100000),
+            Timestamp(1746003005, 125000000),
+            Timestamp(1746003005, 126000000),
+            Timestamp(1746003005, 127000000),
+            Timestamp(1746003060, 0),
+            Timestamp(1746003065, 0)}),
+       makeFlatVector<double>(
+           {1.2345678912345E9,
+            1E16,
+            1.234567891234567E9,
+            1.234567891234567E9,
+            -1.234567891234567E-9,
+            1234567891.234567,
+            -1234567891.234567})});
   test::assertEqualVectors(expected, output);
 }
 
@@ -689,17 +694,18 @@ TEST_F(ClpConnectorTest, test5FloatTimestampPushdown) {
           getExampleFilePath("test_5.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected = makeRowVector({// timestamp
-                                 makeFlatVector<Timestamp>(
-                                     {Timestamp(1746003005, 124000000),
-                                      Timestamp(1746003005, 124100000),
-                                      Timestamp(1746003005, 125000000),
-                                      Timestamp(1746003005, 126000000)}),
-                                 makeFlatVector<double>(
-                                     {1.234567891234500E9,
-                                      1E16,
-                                      1.234567891234567E9,
-                                      1.234567891234567E9})});
+  auto expected = makeRowVector(
+      {// timestamp
+       makeFlatVector<Timestamp>(
+           {Timestamp(1746003005, 124000000),
+            Timestamp(1746003005, 124100000),
+            Timestamp(1746003005, 125000000),
+            Timestamp(1746003005, 126000000)}),
+       makeFlatVector<double>(
+           {1.234567891234500E9,
+            1E16,
+            1.234567891234567E9,
+            1.234567891234567E9})});
   test::assertEqualVectors(expected, output);
 }
 
@@ -731,29 +737,30 @@ TEST_F(ClpConnectorTest, test5FormattedFloatNoPushdown) {
           getExampleFilePath("test_5.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected = makeRowVector({// timestamp
-                                 makeFlatVector<Timestamp>(
-                                     {Timestamp(1746003005, 123457000),
-                                      Timestamp(1746003115, 0),
-                                      Timestamp(1746003120, 0),
-                                      Timestamp(1746003125, 0),
-                                      Timestamp(1746003130, 0),
-                                      Timestamp(1746003135, 0),
-                                      Timestamp(1746003140, 0),
-                                      Timestamp(1746003145, 0),
-                                      Timestamp(1746003185, 0),
-                                      Timestamp(1746003190, 0)}),
-                                 makeFlatVector<double>(
-                                     {1.2345678912345E-29,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0})});
+  auto expected = makeRowVector(
+      {// timestamp
+       makeFlatVector<Timestamp>(
+           {Timestamp(1746003005, 123457000),
+            Timestamp(1746003115, 0),
+            Timestamp(1746003120, 0),
+            Timestamp(1746003125, 0),
+            Timestamp(1746003130, 0),
+            Timestamp(1746003135, 0),
+            Timestamp(1746003140, 0),
+            Timestamp(1746003145, 0),
+            Timestamp(1746003185, 0),
+            Timestamp(1746003190, 0)}),
+       makeFlatVector<double>(
+           {1.2345678912345E-29,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0})});
   test::assertEqualVectors(expected, output);
 }
 
@@ -784,29 +791,30 @@ TEST_F(ClpConnectorTest, test5FormattedFloatPushdown) {
           getExampleFilePath("test_5.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected = makeRowVector({// timestamp
-                                 makeFlatVector<Timestamp>(
-                                     {Timestamp(1746003005, 123457000),
-                                      Timestamp(1746003115, 0),
-                                      Timestamp(1746003120, 0),
-                                      Timestamp(1746003125, 0),
-                                      Timestamp(1746003130, 0),
-                                      Timestamp(1746003135, 0),
-                                      Timestamp(1746003140, 0),
-                                      Timestamp(1746003145, 0),
-                                      Timestamp(1746003185, 0),
-                                      Timestamp(1746003190, 0)}),
-                                 makeFlatVector<double>(
-                                     {1.2345678912345E-29,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0,
-                                      0.0})});
+  auto expected = makeRowVector(
+      {// timestamp
+       makeFlatVector<Timestamp>(
+           {Timestamp(1746003005, 123457000),
+            Timestamp(1746003115, 0),
+            Timestamp(1746003120, 0),
+            Timestamp(1746003125, 0),
+            Timestamp(1746003130, 0),
+            Timestamp(1746003135, 0),
+            Timestamp(1746003140, 0),
+            Timestamp(1746003145, 0),
+            Timestamp(1746003185, 0),
+            Timestamp(1746003190, 0)}),
+       makeFlatVector<double>(
+           {1.2345678912345E-29,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0})});
   test::assertEqualVectors(expected, output);
 }
 
@@ -837,11 +845,11 @@ TEST_F(ClpConnectorTest, test5DictionaryFloatNoPushdown) {
           getExampleFilePath("test_5.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected =
-      makeRowVector({// timestamp
-                     makeFlatVector<Timestamp>(
-                         {Timestamp(1746003195, 0), Timestamp(1746003200, 0)}),
-                     makeFlatVector<double>({2, 2})});
+  auto expected = makeRowVector(
+      {// timestamp
+       makeFlatVector<Timestamp>(
+           {Timestamp(1746003195, 0), Timestamp(1746003200, 0)}),
+       makeFlatVector<double>({2, 2})});
   test::assertEqualVectors(expected, output);
 }
 
@@ -872,11 +880,11 @@ TEST_F(ClpConnectorTest, test5DictionaryFloatPushdown) {
           getExampleFilePath("test_5.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected =
-      makeRowVector({// timestamp
-                     makeFlatVector<Timestamp>(
-                         {Timestamp(1746003195, 0), Timestamp(1746003200, 0)}),
-                     makeFlatVector<double>({2, 2})});
+  auto expected = makeRowVector(
+      {// timestamp
+       makeFlatVector<Timestamp>(
+           {Timestamp(1746003195, 0), Timestamp(1746003200, 0)}),
+       makeFlatVector<double>({2, 2})});
   test::assertEqualVectors(expected, output);
 }
 
@@ -907,16 +915,17 @@ TEST_F(ClpConnectorTest, test5HybridNoPushdown) {
           getExampleFilePath("test_5.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected = makeRowVector({// timestamp
-                                 makeFlatVector<Timestamp>({
-                                     Timestamp(1746003105, 0),
-                                     Timestamp(1746003110, 0),
-                                     Timestamp(1746003150, 0),
-                                     Timestamp(1746003155, 0),
-                                     Timestamp(1746003160, 0),
-                                     Timestamp(1746003205, 0),
-                                 }),
-                                 makeFlatVector<double>({1, 1, 1, 1, 1, 1})});
+  auto expected = makeRowVector(
+      {// timestamp
+       makeFlatVector<Timestamp>({
+           Timestamp(1746003105, 0),
+           Timestamp(1746003110, 0),
+           Timestamp(1746003150, 0),
+           Timestamp(1746003155, 0),
+           Timestamp(1746003160, 0),
+           Timestamp(1746003205, 0),
+       }),
+       makeFlatVector<double>({1, 1, 1, 1, 1, 1})});
   test::assertEqualVectors(expected, output);
 }
 
@@ -947,16 +956,17 @@ TEST_F(ClpConnectorTest, test5HybridPushdown) {
           getExampleFilePath("test_5.clps"),
           ClpConnectorSplit::SplitType::kArchive,
           kqlQuery)});
-  auto expected = makeRowVector({// timestamp
-                                 makeFlatVector<Timestamp>({
-                                     Timestamp(1746003105, 0),
-                                     Timestamp(1746003110, 0),
-                                     Timestamp(1746003150, 0),
-                                     Timestamp(1746003155, 0),
-                                     Timestamp(1746003160, 0),
-                                     Timestamp(1746003205, 0),
-                                 }),
-                                 makeFlatVector<double>({1, 1, 1, 1, 1, 1})});
+  auto expected = makeRowVector(
+      {// timestamp
+       makeFlatVector<Timestamp>({
+           Timestamp(1746003105, 0),
+           Timestamp(1746003110, 0),
+           Timestamp(1746003150, 0),
+           Timestamp(1746003155, 0),
+           Timestamp(1746003160, 0),
+           Timestamp(1746003205, 0),
+       }),
+       makeFlatVector<double>({1, 1, 1, 1, 1, 1})});
   test::assertEqualVectors(expected, output);
 }
 

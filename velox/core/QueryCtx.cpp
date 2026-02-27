@@ -30,16 +30,34 @@ std::shared_ptr<QueryCtx> QueryCtx::create(
     cache::AsyncDataCache* cache,
     std::shared_ptr<memory::MemoryPool> pool,
     folly::Executor* spillExecutor,
-    const std::string& queryId) {
+    std::string queryId,
+    std::shared_ptr<filesystems::TokenProvider> tokenProvider) {
+  return QueryCtx::Builder()
+      .executor(executor)
+      .queryConfig(std::move(queryConfig))
+      .connectorConfigs(std::move(connectorConfigs))
+      .asyncDataCache(cache)
+      .pool(std::move(pool))
+      .spillExecutor(spillExecutor)
+      .queryId(std::move(queryId))
+      .tokenProvider(std::move(tokenProvider))
+      .build();
+}
+
+std::shared_ptr<QueryCtx> QueryCtx::Builder::build() {
   std::shared_ptr<QueryCtx> queryCtx(new QueryCtx(
-      executor,
-      std::move(queryConfig),
-      std::move(connectorConfigs),
-      cache,
-      std::move(pool),
-      spillExecutor,
-      queryId));
+      executor_,
+      std::move(queryConfig_),
+      std::move(connectorConfigs_),
+      cache_,
+      std::move(pool_),
+      spillExecutor_,
+      std::move(queryId_),
+      std::move(tokenProvider_)));
   queryCtx->maybeSetReclaimer();
+  for (auto& cb : releaseCallbacks_) {
+    queryCtx->addReleaseCallback(std::move(cb));
+  }
   return queryCtx;
 }
 
@@ -51,22 +69,37 @@ QueryCtx::QueryCtx(
     cache::AsyncDataCache* cache,
     std::shared_ptr<memory::MemoryPool> pool,
     folly::Executor* spillExecutor,
-    const std::string& queryId)
+    const std::string& queryId,
+    std::shared_ptr<filesystems::TokenProvider> tokenProvider)
     : queryId_(queryId),
       executor_(executor),
       spillExecutor_(spillExecutor),
       cache_(cache),
       connectorSessionProperties_(connectorSessionProperties),
       pool_(std::move(pool)),
-      queryConfig_{std::move(queryConfig)} {
+      queryConfig_{std::move(queryConfig)},
+      fsTokenProvider_(std::move(tokenProvider)) {
   initPool(queryId);
+}
+
+QueryCtx::~QueryCtx() {
+  for (auto& cb : releaseCallbacks_) {
+    try {
+      cb();
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "Release callback threw exception: " << e.what();
+    } catch (...) {
+      LOG(ERROR) << "Release callback threw unknown exception";
+    }
+  }
+  VELOX_CHECK(!underArbitration_);
 }
 
 /*static*/ std::string QueryCtx::generatePoolName(const std::string& queryId) {
   // We attach a monotonically increasing sequence number to ensure the pool
   // name is unique.
   static std::atomic<int64_t> seqNum{0};
-  return fmt::format("query.{}.{}", queryId.c_str(), seqNum++);
+  return fmt::format("query.{}.{}", queryId, seqNum++);
 }
 
 void QueryCtx::maybeSetReclaimer() {
@@ -82,26 +115,30 @@ void QueryCtx::updateSpilledBytesAndCheckLimit(uint64_t bytes) {
   const auto numSpilledBytes = numSpilledBytes_.fetch_add(bytes) + bytes;
   if (queryConfig_.maxSpillBytes() > 0 &&
       numSpilledBytes > queryConfig_.maxSpillBytes()) {
-    VELOX_SPILL_LIMIT_EXCEEDED(fmt::format(
-        "Query exceeded per-query local spill limit of {}",
-        succinctBytes(queryConfig_.maxSpillBytes())));
+    VELOX_SPILL_LIMIT_EXCEEDED(
+        fmt::format(
+            "Query exceeded per-query local spill limit of {}",
+            succinctBytes(queryConfig_.maxSpillBytes())));
   }
 }
 
 void QueryCtx::updateTracedBytesAndCheckLimit(uint64_t bytes) {
   if (numTracedBytes_.fetch_add(bytes) + bytes >=
       queryConfig_.queryTraceMaxBytes()) {
-    VELOX_TRACE_LIMIT_EXCEEDED(fmt::format(
-        "Query exceeded per-query local trace limit of {}",
-        succinctBytes(queryConfig_.queryTraceMaxBytes())));
+    VELOX_TRACE_LIMIT_EXCEEDED(
+        fmt::format(
+            "Query exceeded per-query local trace limit of {}",
+            succinctBytes(queryConfig_.queryTraceMaxBytes())));
   }
 }
 
 std::unique_ptr<memory::MemoryReclaimer> QueryCtx::MemoryReclaimer::create(
     QueryCtx* queryCtx,
     memory::MemoryPool* pool) {
-  return std::unique_ptr<memory::MemoryReclaimer>(
-      new QueryCtx::MemoryReclaimer(queryCtx->shared_from_this(), pool));
+  return std::unique_ptr<memory::MemoryReclaimer>(new QueryCtx::MemoryReclaimer(
+      queryCtx->shared_from_this(),
+      pool,
+      queryCtx->queryConfig().queryMemoryReclaimerPriority()));
 }
 
 uint64_t QueryCtx::MemoryReclaimer::reclaim(

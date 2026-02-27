@@ -15,29 +15,17 @@ include_guard(GLOBAL)
 
 FetchContent_Declare(
   clp
-  GIT_REPOSITORY https://github.com/gibber9809/clp.git
-  GIT_TAG 47063dbc5a707504fea22a35f01fd7c6c228dab0)
+  GIT_REPOSITORY https://github.com/y-scope/clp.git
+  GIT_TAG f82e6114160a6addd4727259906bcf621ac9912c
+)
 
-set(CLP_BUILD_CLP_REGEX_UTILS
-    OFF
-    CACHE BOOL "Build CLP regex utils")
-set(CLP_BUILD_CLP_S_JSONCONSTRUCTOR
-    OFF
-    CACHE BOOL "Build CLP-S JSON constructor")
-set(CLP_BUILD_CLP_S_REDUCER_DEPENDENCIES
-    OFF
-    CACHE BOOL "Build CLP-S reducer dependencies")
-set(CLP_BUILD_CLP_S_SEARCH_SQL
-    OFF
-    CACHE BOOL "Build CLP-S search SQL")
-set(CLP_BUILD_EXECUTABLES
-    OFF
-    CACHE BOOL "Build CLP executables")
-set(CLP_BUILD_TESTING
-    OFF
-    CACHE BOOL "Build CLP tests")
+set(CLP_BUILD_CLP_REGEX_UTILS OFF CACHE BOOL "Build CLP regex utils")
+set(CLP_BUILD_CLP_S_JSONCONSTRUCTOR OFF CACHE BOOL "Build CLP-S JSON constructor")
+set(CLP_BUILD_CLP_S_REDUCER_DEPENDENCIES OFF CACHE BOOL "Build CLP-S reducer dependencies")
+set(CLP_BUILD_CLP_S_SEARCH_SQL OFF CACHE BOOL "Build CLP-S search SQL")
+set(CLP_BUILD_EXECUTABLES OFF CACHE BOOL "Build CLP executables")
+set(CLP_BUILD_TESTING OFF CACHE BOOL "Build CLP tests")
 
 FetchContent_Populate(clp)
 
-add_subdirectory(${clp_SOURCE_DIR}/components/core
-                 ${clp_BINARY_DIR}/components/core)
+add_subdirectory(${clp_SOURCE_DIR}/components/core ${clp_BINARY_DIR}/components/core)

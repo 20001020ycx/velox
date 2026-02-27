@@ -51,17 +51,17 @@ std::unique_ptr<SeekableInputStream> DirectBufferedInput::enqueue(
   VELOX_CHECK_LE(region.offset + region.length, fileSize_);
   requests_.emplace_back(region, id);
   if (tracker_) {
-    tracker_->recordReference(id, region.length, fileNum_, groupId_);
+    tracker_->recordReference(id, region.length, fileNum_.id(), groupId_.id());
   }
   auto stream = std::make_unique<DirectInputStream>(
       this,
       ioStats_.get(),
       region,
       input_,
-      fileNum_,
+      fileNum_.id(),
       tracker_,
       id,
-      groupId_,
+      groupId_.id(),
       options_.loadQuantum());
   requests_.back().stream = stream.get();
   return stream;
@@ -189,7 +189,7 @@ void DirectBufferedInput::readRegion(
       input_,
       ioStats_,
       fsStats_,
-      groupId_,
+      groupId_.id(),
       requests,
       pool_,
       options_.loadQuantum());
@@ -235,7 +235,7 @@ std::shared_ptr<DirectCoalescedLoad> DirectBufferedInput::coalescedLoad(
   return streamToCoalescedLoad_.withWLock(
       [&](auto& loads) -> std::shared_ptr<DirectCoalescedLoad> {
         auto it = loads.find(stream);
-        if (it == loads.end()) {
+        if (it == loads.cend()) {
           return nullptr;
         }
         auto load = std::move(it->second);
@@ -254,7 +254,7 @@ std::unique_ptr<SeekableInputStream> DirectBufferedInput::read(
       ioStats_.get(),
       Region{offset, length},
       input_,
-      fileNum_,
+      fileNum_.id(),
       nullptr,
       TrackingId(),
       0,
@@ -286,10 +286,11 @@ std::vector<cache::CachePin> DirectCoalescedLoad::loadData(bool prefetch) {
   for (auto& request : requests_) {
     const auto& region = request.region;
     if (region.offset > lastEnd) {
-      buffers.push_back(folly::Range<char*>(
-          nullptr,
-          reinterpret_cast<char*>(
-              static_cast<uint64_t>(region.offset - lastEnd))));
+      buffers.push_back(
+          folly::Range<char*>(
+              nullptr,
+              reinterpret_cast<char*>(
+                  static_cast<uint64_t>(region.offset - lastEnd))));
       overread += buffers.back().size();
     }
 
@@ -342,7 +343,7 @@ int32_t DirectCoalescedLoad::getData(
       requests_.begin(), requests_.end(), offset, [](auto& x, auto offset) {
         return x.region.offset < offset;
       });
-  if (it == requests_.end() || it->region.offset != offset) {
+  if (it == requests_.cend() || it->region.offset != offset) {
     return 0;
   }
   data = std::move(it->data);
