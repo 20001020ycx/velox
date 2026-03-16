@@ -18,6 +18,7 @@
 
 #include "clp_s/ArchiveReader.hpp"
 #include "clp_s/SingleFileArchiveDefs.hpp"
+#include "clp_s/search/EvaluateRangeIndexFilters.hpp"
 #include "clp_s/search/EvaluateTimestampIndex.hpp"
 #include "clp_s/search/ast/EmptyExpr.hpp"
 #include "clp_s/search/ast/SearchUtils.hpp"
@@ -151,6 +152,14 @@ ErrorCode ClpArchiveCursor::loadSplit() {
   if (clp_s::EvaluatedValue::False == timestampIndex.run(expr_)) {
     VLOG(2) << "No matching timestamp ranges for query '" << query_ << "'";
     return ErrorCode::InvalidTimestampRange;
+  }
+
+  auto const& rangeIndex = archiveReader_->get_range_index();
+  EvaluateRangeIndexFilters rangeIndexFilter{rangeIndex, true};
+  if (expr_ = rangeIndexFilter.run(expr_);
+      std::dynamic_pointer_cast<EmptyExpr>(expr_)) {
+    VLOG(2) << "No matching range index entries for query '" << query_ << "'";
+    return ErrorCode::SchemaNotFound;
   }
 
   schemaMatch_ = std::make_shared<SchemaMatch>(schemaTree, schemaMap);
