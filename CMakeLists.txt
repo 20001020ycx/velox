@@ -640,6 +640,9 @@ if(${VELOX_ENABLE_CLP_CONNECTOR})
   velox_set_source(ystdlib)
   velox_resolve_dependency(ystdlib)
 
+  velox_set_source(xxHash)
+  velox_resolve_dependency(xxHash)
+
   # Dependencies that depend on other dependencies
   velox_set_source(log_surgeon)
   velox_resolve_dependency(log_surgeon)
