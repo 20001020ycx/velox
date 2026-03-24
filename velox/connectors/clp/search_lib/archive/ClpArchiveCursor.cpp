@@ -78,7 +78,7 @@ uint64_t ClpArchiveCursor::fetchNext(uint64_t numRows) {
 
       schemaReader_ =
           &archiveReader_->read_schema_table(currentSchemaId_, false, false);
-      schemaReader_->initialize_filter_with_column_map(queryRunner_.get());
+      schemaReader_->initialize_filter_with_column_map(*queryRunner_);
 
       errorCode_ = ErrorCode::Success;
       currentSchemaTableLoaded_ = true;
