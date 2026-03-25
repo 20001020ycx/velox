@@ -1,0 +1,3 @@
+{"requestId":"req-a1","service":"auth","status":200}
+{"requestId":"req-a2","service":"auth","status":401}
+{"requestId":"req-a3","service":"auth","status":200}

@@ -49,6 +49,7 @@ class ClpQueryRunner : public clp_s::search::QueryRunner {
       bool ignoreCase,
       const std::shared_ptr<clp_s::search::Projection>& projection)
       : clp_s::search::QueryRunner(match, expr, archiveReader, ignoreCase),
+        archiveReader_(archiveReader),
         projection_(projection) {}
 
   /// Initializes the filter with schema information and column readers.
@@ -77,14 +78,28 @@ class ClpQueryRunner : public clp_s::search::QueryRunner {
     return projectedColumns_;
   }
 
+  /// Gets the global log event index for a given local message index in the
+  /// current schema table.
+  /// @param messageIndex The local message index within the current schema table.
+  /// @return The global log event index, or 0 if the reader is unavailable.
+  int64_t getLogEventId(uint64_t messageIndex) const;
+
  private:
   std::shared_ptr<clp_s::search::ast::Expression> expr_;
-  std::shared_ptr<clp_s::SchemaTree> schemaTree_;
+  std::shared_ptr<clp_s::ArchiveReader> archiveReader_;
   std::shared_ptr<clp_s::search::Projection> projection_;
   std::vector<clp_s::BaseColumnReader*> projectedColumns_;
 
   uint64_t curMessage_{};
   uint64_t numMessages_{};
+  /// Column reader for CLP-S's internal log_event_idx metadata field, which
+  /// maps each row's local index within a schema table to its global log event
+  /// index across the entire archive.
+  ///
+  /// Re-initialized per schema table: init() looks up the column ID in the schema
+  /// tree and finds the matching reader in the column map for the current table.
+  /// nullptr if unavailable (e.g., archive created without --record-log-order).
+  clp_s::BaseColumnReader* logEventIdColumnReader_{nullptr};
 };
 
 } // namespace facebook::velox::connector::clp::search_lib

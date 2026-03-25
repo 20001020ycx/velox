@@ -77,16 +77,20 @@ class BaseClpCursor {
 
   using MetadataValueType = std::variant<std::string, int64_t, double>;
 
+  using PerFileMetadataProjectionMap =
+      std::map<std::string, std::map<std::string, MetadataValueType>>;
+
   /// Executes a query. This function parses, validates, and prepares the given
   /// query for execution.
   ///
   /// @param query The KQL query to execute.
-  /// @param metadataColumnValues Constant values for metadata columns.
+  /// @param metadataProjection Per-file metadata projection map: IR path →
+  /// (column name → value). For IR splits this map has a single entry.
   /// @param outputColumns A vector specifying the columns to be included in the
   /// query result.
   void executeQuery(
       const std::string& query,
-      const std::map<std::string, MetadataValueType>& metadataColumnValues,
+      const PerFileMetadataProjectionMap& metadataProjection,
       const std::vector<Field>& outputColumns);
 
   /// Fetches the next set of rows from the cursor. If the split is not yet
@@ -129,9 +133,9 @@ class BaseClpCursor {
   clp_s::InputSource inputSource_;
   std::vector<Field> outputColumns_;
   std::string query_;
-  /// Maps column names to constant values fetched from metadata database for
-  /// metadata projection.
-  std::map<std::string, MetadataValueType> metadataColumnValues_;
+  /// Maps IR paths to per-file metadata column values for metadata projection.
+  /// For IR splits this map has a single entry keyed by the IR file path.
+  PerFileMetadataProjectionMap perFileMetadataColumnValues_;
   std::string splitPath_;
 
  private:

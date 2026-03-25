@@ -196,8 +196,13 @@ VectorPtr ClpIrCursor::createMetadataProjectionVector(
     const TypePtr& vectorType,
     size_t vectorSize,
     memory::MemoryPool* pool) {
-  auto metadata_it = metadataColumnValues_.find(projectedColumn.name);
-  if (metadata_it == metadataColumnValues_.end()) {
+  if (perFileMetadataColumnValues_.empty()) {
+    return nullptr;
+  }
+  // IR splits have exactly one entry in the per-file map.
+  auto const& columnValues = perFileMetadataColumnValues_.begin()->second;
+  auto metadata_it = columnValues.find(projectedColumn.name);
+  if (metadata_it == columnValues.end()) {
     return nullptr;
   }
 

@@ -64,14 +64,8 @@ class ClpConnectorTest : public exec::test::OperatorTestBase {
       const std::string& splitPath,
       ClpConnectorSplit::SplitType type,
       std::shared_ptr<std::string> kqlQuery) {
-    auto emptyMetadataMap =
-        std::make_shared<std::map<std::string, MetadataValueType>>();
     return exec::Split(std::make_shared<ClpConnectorSplit>(
-        kClpConnectorId,
-        splitPath,
-        static_cast<int>(type),
-        kqlQuery,
-        emptyMetadataMap));
+        kClpConnectorId, splitPath, static_cast<int>(type), kqlQuery));
   }
 
   RowVectorPtr getResults(

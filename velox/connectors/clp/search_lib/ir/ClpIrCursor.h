@@ -109,7 +109,7 @@ class ClpIrCursor final : public BaseClpCursor {
    * @param vectorSize Number of rows in the vector.
    * @param pool Memory pool for vector allocation.
    * @return A constant vector filled with the metadata value.
-   * @return nullptr if the column is not in metadataColumnValues_.
+   * @return nullptr if the column is not in perFileMetadataColumnValues_.
    */
   VectorPtr createMetadataProjectionVector(
       const Field& projectedColumn,

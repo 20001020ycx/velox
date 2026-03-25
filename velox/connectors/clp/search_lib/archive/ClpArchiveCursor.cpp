@@ -15,8 +15,10 @@
  */
 
 #include <glog/logging.h>
+#include <nlohmann/json.hpp>
 
 #include "clp_s/ArchiveReader.hpp"
+#include "clp_s/archive_constants.hpp"
 #include "clp_s/SingleFileArchiveDefs.hpp"
 #include "clp_s/search/EvaluateRangeIndexFilters.hpp"
 #include "clp_s/search/EvaluateTimestampIndex.hpp"
@@ -79,6 +81,8 @@ uint64_t ClpArchiveCursor::fetchNext(uint64_t numRows) {
       schemaReader_ =
           &archiveReader_->read_schema_table(currentSchemaId_, false, false);
       schemaReader_->initialize_filter_with_column_map(*queryRunner_);
+      VLOG(2) << "fetchNext: loading schema table schemaId=" << currentSchemaId_
+              << " schemaIndex=" << currentSchemaIndex_;
 
       errorCode_ = ErrorCode::Success;
       currentSchemaTableLoaded_ = true;
@@ -106,10 +110,15 @@ VectorPtr ClpArchiveCursor::createVector(
     size_t vectorSize) {
   auto projectedColumns = getProjectedColumns();
   VELOX_CHECK_EQ(
-      projectedColumns.size() + jsonStringColumnIndices_.size(),
+      projectedColumns.size() + jsonStringColumnIndices_.size() +
+          metadataColumnIndices_.size(),
       outputColumns_.size(),
-      "Projected columns size {} does not match fields size {}",
+      "Column classification mismatch for output type '{}': "
+      "projected ({}) + JSON string ({}) + metadata ({}) != output columns ({})",
+      vectorType->toString(),
       projectedColumns.size(),
+      jsonStringColumnIndices_.size(),
+      metadataColumnIndices_.size(),
       outputColumns_.size());
   return createVectorHelper(pool, vectorType, vectorSize, projectedColumns);
 }
@@ -176,6 +185,10 @@ ErrorCode ClpArchiveCursor::loadSplit() {
       auto const& column = outputColumns_[i];
       if (ClpColumnHandle::jsonStringColumnName_ == column.name) {
         jsonStringColumnIndices_.insert(i);
+        continue;
+      }
+      if (isMetadataColumn(column.name)) {
+        metadataColumnIndices_.insert(i);
         continue;
       }
       std::vector<std::string> descriptorTokens;
@@ -279,6 +292,17 @@ VectorPtr ClpArchiveCursor::createVectorHelper(
   auto vector = BaseVector::create(vectorType, vectorSize, pool);
   vector->setNulls(allocateNulls(vectorSize, pool, bits::kNull));
 
+  if (metadataColumnIndices_.contains(columnIndex_)) {
+    auto metadataVector =
+        createPerFileMetadataVector(vectorType, vectorSize, pool);
+    ++columnIndex_;
+    if (metadataVector != nullptr) {
+      return metadataVector;
+    }
+    // Metadata value not found — return null vector.
+    return vector;
+  }
+
   if (jsonStringColumnIndices_.contains(columnIndex_)) {
     ++columnIndex_;
     return std::make_shared<LazyVector>(
@@ -305,6 +329,87 @@ VectorPtr ClpArchiveCursor::createVectorHelper(
       std::make_unique<ClpArchiveVectorLoader>(
           projectedColumn, projectedType, filteredRowIndices_),
       std::move(vector));
+}
+
+bool ClpArchiveCursor::isMetadataColumn(const std::string& columnName) const {
+  for (auto const& [irPath, columnValues] : perFileMetadataColumnValues_) {
+    if (columnValues.count(columnName) > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void ClpArchiveCursor::setMetadataValue(
+    BaseVector* vector,
+    size_t i,
+    const MetadataValueType& value) {
+  std::visit(
+      [&](auto&& v) {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, std::string>) {
+          vector->asFlatVector<StringView>()->set(
+              i, StringView(v.data(), v.size()));
+        } else if constexpr (std::is_same_v<T, int64_t>) {
+          vector->asFlatVector<int64_t>()->set(i, v);
+        } else if constexpr (std::is_same_v<T, double>) {
+          vector->asFlatVector<double>()->set(i, v);
+        }
+      },
+      value);
+  vector->setNull(i, false);
+}
+
+VectorPtr ClpArchiveCursor::createPerFileMetadataVector(
+    const TypePtr& vectorType,
+    size_t vectorSize,
+    memory::MemoryPool* pool) {
+  if (perFileMetadataColumnValues_.empty() || filteredRowIndices_->empty()) {
+    return nullptr;
+  }
+
+  auto columnName = outputColumns_[columnIndex_].name;
+
+  auto vector = BaseVector::create(vectorType, vectorSize, pool);
+  vector->setNulls(allocateNulls(vectorSize, pool, bits::kNull));
+
+  for (size_t i = 0; i < vectorSize; ++i) {
+    auto messageIndex = filteredRowIndices_->at(i);
+    auto logEventIdx = queryRunner_->getLogEventId(messageIndex);
+
+    try {
+      auto const& rangeMetadata =
+          archiveReader_->get_metadata_for_log_event(logEventIdx);
+
+      // skip rows without _file_name metadata field.
+      auto filenameIt =
+          rangeMetadata.find(clp_s::constants::range_index::cFilename);
+      if (filenameIt == rangeMetadata.end() || !filenameIt->is_string()) {
+        continue;
+      }
+      auto const& irPath = filenameIt->get_ref<std::string const&>();
+
+      // Skip rows from IR files that have no entry in the metadata projection
+      // map.
+      auto fileIt = perFileMetadataColumnValues_.find(irPath);
+      if (fileIt == perFileMetadataColumnValues_.end()) {
+        continue;
+      }
+
+      // Skip rows for which this column was not provided in the per-file map.
+      auto colIt = fileIt->second.find(columnName);
+      if (colIt == fileIt->second.end()) {
+        continue;
+      }
+
+      setMetadataValue(vector.get(), i, colIt->second);
+    } catch (std::exception const& e) {
+      VLOG(2) << "Failed to get metadata for log event " << logEventIdx << ": "
+              << e.what();
+      // Leave as null.
+    }
+  }
+  return vector;
 }
 
 } // namespace facebook::velox::connector::clp::search_lib

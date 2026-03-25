@@ -32,10 +32,10 @@ namespace facebook::velox::connector::clp::search_lib {
 
 void BaseClpCursor::executeQuery(
     const std::string& query,
-    const std::map<std::string, MetadataValueType>& metadataColumnValues,
+    const PerFileMetadataProjectionMap& metadataProjection,
     const std::vector<Field>& outputColumns) {
   query_ = query;
-  metadataColumnValues_ = metadataColumnValues;
+  perFileMetadataColumnValues_ = metadataProjection;
   outputColumns_ = outputColumns;
   errorCode_ = preprocessQuery();
 }

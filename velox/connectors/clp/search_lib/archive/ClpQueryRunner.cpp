@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#include <glog/logging.h>
+
+#include "clp_s/ColumnReader.hpp"
 #include "velox/connectors/clp/search_lib/archive/ClpQueryRunner.h"
 
 using namespace clp_s;
@@ -52,6 +55,22 @@ void ClpQueryRunner::init(
     }
   }
 
+  // Look up the log_event_idx column reader from the archive schema tree.
+  logEventIdColumnReader_ = nullptr;
+  auto logEventIdColumnId = archiveReader_->get_schema_tree()
+      ->get_metadata_field_id(clp_s::constants::cLogEventIdxName);
+  if (logEventIdColumnId >= 0) {
+    auto it = columnMap.find(logEventIdColumnId);
+    if (it != columnMap.end()) {
+      logEventIdColumnReader_ = it->second;
+    } else {
+      VLOG(2) << "ClpQueryRunner::init: log_event_idx columnId=" << logEventIdColumnId
+              << " not found in columnMap (size=" << columnMap.size() << ")";
+    }
+  } else {
+    VLOG(2) << "ClpQueryRunner::init: log_event_idx not found in schema tree";
+  }
+
   for (const auto& [columnId, columnReader] : columnMap) {
     initialize_reader(columnId, columnReader);
   }
@@ -75,6 +94,13 @@ uint64_t ClpQueryRunner::fetchNext(
     }
   }
   return rowsScanned;
+}
+
+int64_t ClpQueryRunner::getLogEventId(uint64_t messageIndex) const {
+  if (logEventIdColumnReader_) {
+    return std::get<int64_t>(logEventIdColumnReader_->extract_value(messageIndex));
+  }
+  return 0;
 }
 
 } // namespace facebook::velox::connector::clp::search_lib

@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <string>
 #include <unordered_set>
 
 #include "velox/connectors/clp/search_lib/BaseClpCursor.h"
@@ -72,11 +73,30 @@ class ClpArchiveCursor final : public BaseClpCursor {
 
   const std::vector<clp_s::BaseColumnReader*>& getProjectedColumns() const;
 
+  bool isMetadataColumn(const std::string& columnName) const;
+
+  /// Creates a vector for a per-file metadata column by looking up each row's
+  /// IR path via the range index and extracting the corresponding metadata
+  /// value.
+  VectorPtr createPerFileMetadataVector(
+      const TypePtr& vectorType,
+      size_t vectorSize,
+      memory::MemoryPool* pool);
+
+  /// Sets the metadata value in the flat vector at row i and clears its null
+  /// bit. Handles all supported MetadataValueType variants.
+  static void setMetadataValue(
+      BaseVector* vector,
+      size_t i,
+      const MetadataValueType& value);
+
   VectorPtr createVectorHelper(
       memory::MemoryPool* pool,
       const TypePtr& vectorType,
       size_t vectorSize,
       const std::vector<clp_s::BaseColumnReader*>& projectedColumns);
+
+  std::unordered_set<size_t> metadataColumnIndices_;
 };
 
 } // namespace facebook::velox::connector::clp::search_lib

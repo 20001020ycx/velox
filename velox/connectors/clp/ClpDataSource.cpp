@@ -27,6 +27,8 @@
 
 namespace facebook::velox::connector::clp {
 
+using PerFileMetadataProjectionMap = search_lib::BaseClpCursor::PerFileMetadataProjectionMap;
+
 ClpDataSource::ClpDataSource(
     const RowTypePtr& outputType,
     const ConnectorTableHandlePtr& tableHandle,
@@ -125,15 +127,15 @@ void ClpDataSource::addSplit(std::shared_ptr<ConnectorSplit> split) {
   }
 
   auto pushDownQuery = clpSplit->kqlQuery_;
-  const std::map<std::string, MetadataValueType> emptyMetadataMap;
-  const auto& metadataValues = clpSplit->metadataColumnValues_
-      ? *clpSplit->metadataColumnValues_
-      : emptyMetadataMap;
+  const PerFileMetadataProjectionMap emptyMetadataProjection;
+  const auto& metadataProjection = clpSplit->metadataProjection_
+      ? *clpSplit->metadataProjection_
+      : emptyMetadataProjection;
 
   if (pushDownQuery && !pushDownQuery->empty()) {
-    cursor_->executeQuery(*pushDownQuery, metadataValues, fields_);
+    cursor_->executeQuery(*pushDownQuery, metadataProjection, fields_);
   } else {
-    cursor_->executeQuery("*", metadataValues, fields_);
+    cursor_->executeQuery("*", metadataProjection, fields_);
   }
 }
 

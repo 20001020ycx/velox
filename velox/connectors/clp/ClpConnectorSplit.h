@@ -23,19 +23,22 @@ namespace facebook::velox::connector::clp {
 /// Metadata value type for projection.
 using MetadataValueType = std::variant<std::string, int64_t, double>;
 
+/// Per-file metadata map: IR path → (column name → value).
+using PerFileMetadataProjectionMap =
+    std::map<std::string, std::map<std::string, MetadataValueType>>;
+
 struct ClpConnectorSplit : public connector::ConnectorSplit {
   ClpConnectorSplit(
       const std::string& connectorId,
       const std::string& path,
       const int type,
       std::shared_ptr<std::string> kqlQuery,
-      std::shared_ptr<std::map<std::string, MetadataValueType>>
-          metadataColumnValues)
+      std::shared_ptr<PerFileMetadataProjectionMap> metadataProjection = nullptr)
       : connector::ConnectorSplit(connectorId),
         path_(path),
         type_(static_cast<SplitType>(type)),
         kqlQuery_(std::move(kqlQuery)),
-        metadataColumnValues_(std::move(metadataColumnValues)) {}
+        metadataProjection_(std::move(metadataProjection)) {}
 
   [[nodiscard]] std::string toString() const override {
     return fmt::format(
@@ -50,10 +53,9 @@ struct ClpConnectorSplit : public connector::ConnectorSplit {
   const std::string path_;
   const SplitType type_;
   std::shared_ptr<std::string> kqlQuery_;
-  /// Maps column names to constant values fetched from metadata database for
-  /// metadata projection.
-  std::shared_ptr<std::map<std::string, MetadataValueType>>
-      metadataColumnValues_;
+  /// Maps IR paths to per-file metadata column values for metadata projection.
+  /// For IR splits this map has a single entry keyed by the IR file path.
+  std::shared_ptr<PerFileMetadataProjectionMap> metadataProjection_;
 };
 
 } // namespace facebook::velox::connector::clp

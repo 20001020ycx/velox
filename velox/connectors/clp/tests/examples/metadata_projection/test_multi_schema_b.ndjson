@@ -1,0 +1,6 @@
+{"requestId":"req-b1","schema":"service_schema","service":"db","status":503}
+{"requestId":"req-b2","schema":"message_schema","message":"retry limit"}
+{"requestId":"req-b3","schema":"service_schema","service":"cache","status":200}
+{"requestId":"req-b4","schema":"message_schema","message":"pool exhausted"}
+{"requestId":"req-b5","schema":"service_schema","service":"queue","status":429}
+{"requestId":"req-b6","schema":"message_schema","message":"deadline exceeded"}

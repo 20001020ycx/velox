@@ -1,0 +1,6 @@
+{"requestId":"req-a1","schema":"service_schema","service":"auth","status":200}
+{"requestId":"req-a2","schema":"message_schema","message":"error occurred"}
+{"requestId":"req-a3","schema":"service_schema","service":"api","status":500}
+{"requestId":"req-a4","schema":"message_schema","message":"timeout"}
+{"requestId":"req-a5","schema":"service_schema","service":"web","status":201}
+{"requestId":"req-a6","schema":"message_schema","message":"connection lost"}
