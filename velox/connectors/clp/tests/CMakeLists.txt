@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 add_executable(velox_clp_connector_test ClpConfigTest.cpp ClpConnectorTest.cpp
-                                        ClpMetadataProjectionTest.cpp)
+                                        ClpMetadataProjectionTest.cpp
+                                        ClpIrTruncatedStreamTest.cpp)
 
 add_test(velox_clp_connector_test velox_clp_connector_test)
 
