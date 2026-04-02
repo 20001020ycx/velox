@@ -19,6 +19,7 @@
 #include "clp_s/search/ast/SetTimestampLiteralPrecision.hpp"
 #include "clp_s/search/ast/TimestampLiteral.hpp"
 
+#include "ffi/ir_stream/IrDeserializationError.hpp"
 #include "ffi/ir_stream/search/QueryHandler.hpp"
 #include "velox/connectors/clp/ClpColumnHandle.h"
 #include "velox/connectors/clp/search_lib/ir/ClpIrCursor.h"
@@ -177,8 +178,12 @@ ystdlib::error_handling::Result<void> ClpIrCursor::deserialize(
         irDeserializer_->deserialize_next_ir_unit(*irReaderZstdWrapper_);
     if (deserializeResult.has_error()) {
       auto error = deserializeResult.error();
-      if (std::errc::result_out_of_range == error ||
-          irDeserializer_->is_stream_completed()) {
+      if (error
+              == ::clp::ffi::ir_stream::IrDeserializationError{
+                      ::clp::ffi::ir_stream::IrDeserializationErrorEnum::IncompleteStream
+              }
+          || irDeserializer_->is_stream_completed())
+      {
         break;
       }
       return error;
