@@ -21,6 +21,15 @@
 
 namespace facebook::velox::connector::clp::search_lib {
 
+std::string serializeLogEventJson(const nlohmann::json& logEventJson) {
+  // Serialize with the `replace` error handler (see the header for rationale).
+  // nlohmann runs the same UTF-8 validation pass regardless of handler, so this
+  // costs the same as the default `dump()` on valid input and never throws;
+  // there is no per-row overhead on the common valid-UTF-8 path.
+  return logEventJson.dump(
+      -1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
 void ClpIrJsonStringVectorLoader::loadInternal(
     RowSet rows,
     ValueHook* hook,
@@ -43,7 +52,8 @@ void ClpIrJsonStringVectorLoader::loadInternal(
           error.message());
     }
 
-    std::string const jsonString = serializedResult.value().second.dump();
+    std::string const jsonString =
+        serializeLogEventJson(serializedResult.value().second);
     stringVector->set(vectorIndex, StringView(jsonString));
     stringVector->setNull(vectorIndex, false);
   }

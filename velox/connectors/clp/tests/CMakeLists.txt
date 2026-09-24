@@ -13,7 +13,8 @@
 # limitations under the License.
 add_executable(velox_clp_connector_test ClpConfigTest.cpp ClpConnectorTest.cpp
                                         ClpMetadataProjectionTest.cpp
-                                        ClpIrTruncatedStreamTest.cpp)
+                                        ClpIrTruncatedStreamTest.cpp
+                                        ClpIrJsonStringVectorLoaderTest.cpp)
 
 add_test(velox_clp_connector_test velox_clp_connector_test)
 
